@@ -101,13 +101,21 @@ GENERAL_PROMPT = ADMIN_PROMPT
 # ================== LLM ==================
 
 class TARSBrain:
-    def think(self, chat_id: int, user_message: str) -> str:
+    def think(self, chat_id: int, user_message: str, is_reply: bool = False) -> str:
         context = self._build_context(chat_id)
+
+        reply_hint = ""
+        if is_reply:
+            reply_hint = (
+                "\n\n"
+                "Системная пометка: пользователь отвечает на твой предыдущий ответ. "
+                "Продолжи диалог логично и кратко."
+            )
 
         prompt = GENERAL_PROMPT.format(
             context=context,
             message=user_message
-        )
+        ) + reply_hint
 
         payload = {
             "model": MODEL_NAME,
@@ -158,7 +166,16 @@ class TARSBrain:
 
 brain = TARSBrain()
 
-# ================== ЛОГИКА ==================
+# ================== LOGIC ==================
+
+def is_reply_to_tars(message) -> bool:
+    if not message.reply_to_message:
+        return False
+
+    if not message.reply_to_message.from_user:
+        return False
+
+    return message.reply_to_message.from_user.id == bot.get_me().id
 
 def is_calling_tars(text: str) -> bool:
     if not text:
@@ -209,13 +226,21 @@ def handle_message(message):
     if rate_limited(chat_id, user_id):
         return
 
-    if not is_calling_tars(text):
+    called_by_name = is_calling_tars(text)
+    called_by_reply = is_reply_to_tars(message)
+
+    if not (called_by_name or called_by_reply):
         return
 
     bot.send_chat_action(chat_id, "typing")
     time.sleep(random.uniform(0.4, 1.0))
 
-    reply = brain.think(chat_id, text[:MAX_INPUT_CHARS])
+    reply = brain.think(
+        chat_id,
+        text[:MAX_INPUT_CHARS],
+        is_reply=called_by_reply
+    )
+
     bot.reply_to(message, reply)
 
 # ================== START ==================
