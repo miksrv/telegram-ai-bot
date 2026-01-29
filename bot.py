@@ -6,6 +6,7 @@ TARS v4.1
 
 import os
 import time
+import re
 import random
 import logging
 from collections import defaultdict, deque
@@ -164,7 +165,10 @@ def is_calling_tars(text: str) -> bool:
         return False
 
     t = text.lower()
-    if any(trigger in t for trigger in TRIGGERS):
+
+    words = re.findall(r"[a-zа-яё]+", t)
+
+    if any(word in TRIGGERS for word in words):
         return True
 
     if "?" in t and random.random() < 0.08:
