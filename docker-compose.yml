@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  tars-bot:
+    container_name: tars-bot
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./bot.py:/app/bot.py:ro
+    command: python /app/bot.py
+
