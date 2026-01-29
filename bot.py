@@ -20,15 +20,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
-# ================== ENV ==================
-
 def require_env(name: str) -> str:
+    """
+    Returns the value of the specified environment variable.
+    Raises RuntimeError if the variable is not set.
+    """
     value = os.getenv(name)
     if not value:
-        raise RuntimeError(f"ENV переменная {name} не задана")
+        raise RuntimeError(f"ENV variable {name} is not set")
     return value
 
 def parse_chat_ids(raw: str) -> set[int]:
+    """
+    Parses a comma-separated string of chat IDs and returns a set of integers.
+    """
     return {int(x.strip()) for x in raw.split(",") if x.strip()}
 
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
@@ -36,22 +41,14 @@ ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
 ADMIN_ID = int(require_env("ADMIN_ID"))
-
-# ================== КОНСТАНТЫ ==================
-
 MODEL_NAME = "llama-3.1-8b-instant"
 MAX_INPUT_CHARS = 1500
 MAX_CONTEXT_MESSAGES = 6
 MEMORY_LIMIT = 40
 USER_COOLDOWN_SECONDS = 6
-
 TRIGGERS = ("тарс", "tars")
 
-# ================== TELEGRAM ==================
-
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-
-# ================== ПАМЯТЬ ==================
 
 MemoryKey = Tuple[int, int]
 MemoryItem = Tuple[str, str]
@@ -61,8 +58,6 @@ memories: Dict[int, Deque[MemoryItem]] = defaultdict(
 )
 
 cooldowns: Dict[int, float] = {}
-
-# ================== PROMPTS ==================
 
 ADMIN_PROMPT = """
 You are TARS, an autonomous robot from the movie “Interstellar”.
@@ -101,9 +96,12 @@ Answer:
 
 GENERAL_PROMPT = ADMIN_PROMPT
 
-# ================== LLM ==================
 
 class TARSBrain:
+    """
+    Handles context management and communication with the Groq API for generating TARS bot responses.
+    Maintains chat memory, builds prompts, and processes replies for each chat session.
+    """
     def think(self, chat_id: int, user_message: str, is_reply: bool = False) -> str:
         context = self._build_context(chat_id)
 
@@ -111,8 +109,8 @@ class TARSBrain:
         if is_reply:
             reply_hint = (
                 "\n\n"
-                "Системная пометка: пользователь отвечает на твой предыдущий ответ. "
-                "Продолжи диалог логично и кратко."
+                "System note: the user is replying to your previous response. "
+                "Continue the dialogue logically and concisely."
             )
 
         prompt = GENERAL_PROMPT.format(
@@ -169,9 +167,11 @@ class TARSBrain:
 
 brain = TARSBrain()
 
-# ================== LOGIC ==================
-
 def is_reply_to_tars(message) -> bool:
+    """
+    Checks if the given message is a reply to a message sent by the bot.
+    Returns True if the message is replying to the bot, otherwise False.
+    """
     if not message.reply_to_message:
         return False
 
@@ -181,6 +181,12 @@ def is_reply_to_tars(message) -> bool:
     return message.reply_to_message.from_user.id == bot.get_me().id
 
 def is_calling_tars(text: str) -> bool:
+    """
+    Determines if the message text is addressing the TARS bot.
+
+    Returns True if the text contains a trigger word (e\.g\., "tars" or "тарс") or, with a small probability,
+    if the message contains a question mark\.
+    """
     if not text:
         return False
 
@@ -197,6 +203,12 @@ def is_calling_tars(text: str) -> bool:
     return False
 
 def rate_limited(chat_id: int, user_id: int) -> bool:
+    """
+    Checks if the user is currently rate-limited in the given chat.
+
+    Returns True if the user must wait before sending another message,
+    otherwise updates the cooldown and returns False.
+    """
     key = (chat_id, user_id)
     now = time.time()
     last = cooldowns.get(key, 0)
@@ -207,10 +219,12 @@ def rate_limited(chat_id: int, user_id: int) -> bool:
     cooldowns[key] = now
     return False
 
-# ================== HANDLER ==================
-
 @bot.message_handler(content_types=["text"])
 def handle_message(message):
+    """
+    Handles incoming text messages in allowed chats.
+    Logs message details and processes the message if it is addressed to the bot.
+    """
     chat_id = message.chat.id
     user_id = message.from_user.id
     text = message.text.strip()
@@ -246,11 +260,13 @@ def handle_message(message):
 
     bot.reply_to(message, reply)
 
-# ================== START ==================
-
 def main():
-    logging.info("TARS запущен в мультичат-режиме")
-    logging.info("Разрешённые чаты: %s", ", ".join(map(str, ALLOWED_CHAT_IDS)))
+    """
+    Starts the TARS Telegram bot in multi-chat mode.
+    Logs startup information and begins polling for new messages.
+    """
+    logging.info("TARS started in multi-chat mode")
+    logging.info("Allowed chats: %s", ", ".join(map(str, ALLOWED_CHAT_IDS)))
     bot.infinity_polling(
         skip_pending=True,
         timeout=60,
