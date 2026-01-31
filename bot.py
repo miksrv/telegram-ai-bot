@@ -319,90 +319,66 @@ def rate_limited(chat_id: int, user_id: int) -> bool:
     cooldowns[key] = now
     return False
 
-@bot.message_handler(content_types=["text"])
+def extract_photo_and_caption(message):
+    """
+    Returns (photo, caption) from the message itself or from the replied message.
+    If no photo is found, returns (None, None).
+    """
+    if message.photo:
+        return message.photo, message.caption or ""
+
+    if message.reply_to_message and message.reply_to_message.photo:
+        caption = (
+                message.text
+                or message.caption
+                or message.reply_to_message.caption
+                or ""
+        )
+        return message.reply_to_message.photo, caption
+
+    return None, None
+
+@bot.message_handler(content_types=["text", "photo"])
 def handle_message(message):
-    """
-    Handles incoming text messages in allowed chats.
-    Logs message details and processes the message if it is addressed to the bot.
-    """
     chat_id = message.chat.id
     user_id = message.from_user.id
-    text = message.text.strip()
 
     if chat_id not in ALLOWED_CHAT_IDS:
         return
 
-    logging.info(
-        "MSG chat=%s user=%s (%s): %s",
-        chat_id,
-        message.from_user.username or "no_username",
-        user_id,
-        text[:200],
-        )
+    photos, caption = extract_photo_and_caption(message)
 
-    if rate_limited(chat_id, user_id):
-        return
+    called_by_reply = is_reply_to_tars(message)
+    text = message.text or caption or ""
 
     called_by_name = is_calling_tars(text)
-    called_by_reply = is_reply_to_tars(message)
 
     if not (called_by_name or called_by_reply):
+        return
+
+    if rate_limited(chat_id, user_id):
         return
 
     bot.send_chat_action(chat_id, "typing")
     time.sleep(random.uniform(0.4, 1.0))
 
+    # 🖼️ There is an image — vision
+    if photos:
+        largest_photo = photos[-1]
+        file_info = bot.get_file(largest_photo.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+
+        reply = brain.analyze_image(file_url, caption)
+        bot.reply_to(message, reply)
+        return
+
+    # 💬 Text only — standard response
     reply = brain.think(
         chat_id,
         text[:MAX_INPUT_CHARS],
         is_reply=called_by_reply
     )
-
     bot.reply_to(message, reply)
-
-@bot.message_handler(content_types=["photo"])
-def handle_photo(message):
-    """
-    Handles incoming photo messages in allowed chats.
-    Processes the photo if accompanied by a trigger word in the caption.
-    """
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-
-    if chat_id not in ALLOWED_CHAT_IDS:
-        return
-
-    caption = message.caption or ""
-    text = caption.strip()
-
-    logging.info(
-        "PHOTO chat=%s user=%s (%s) caption: %s",
-        chat_id,
-        message.from_user.username or "no_username",
-        user_id,
-        text[:200],
-        )
-
-    if rate_limited(chat_id, user_id):
-        return
-
-    called_by_name = is_calling_tars(text)
-    called_by_reply = is_reply_to_tars(message)
-
-    if not (called_by_name or called_by_reply):
-        return
-
-    bot.send_chat_action(chat_id, "typing")
-    time.sleep(random.uniform(0.4, 1.0))
-
-    photo_sizes = message.photo
-    largest_photo = photo_sizes[-1]
-    file_info = bot.get_file(largest_photo.file_id)
-    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-
-    analysis = brain.analyze_image(file_url, caption)
-
-    bot.reply_to(message, analysis)
 
 def main():
     """
