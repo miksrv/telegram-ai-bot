@@ -10,7 +10,8 @@ import re
 import random
 import logging
 from collections import defaultdict, deque
-from typing import Deque, Dict, Tuple
+from typing import Deque, Dict, Tuple, Optional
+import base64
 
 import requests
 import telebot
@@ -41,7 +42,8 @@ ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
 ADMIN_ID = int(require_env("ADMIN_ID"))
-MODEL_NAME = "llama-3.1-8b-instant"
+MODEL_TEXT = "llama-3.1-8b-instant"
+MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 MAX_INPUT_CHARS = 1500
 MAX_CONTEXT_MESSAGES = 6
 MEMORY_LIMIT = 40
@@ -94,6 +96,30 @@ User message:
 Answer:
 """
 
+VISION_PROMPT = """
+You are TARS, the autonomous tactical robot from the movie Interstellar.
+
+Personality and tone:
+You speak briefly, confidently, and without unnecessary emotion.
+Your tone is dry, technical, and slightly sarcastic.
+Humor is allowed, but restrained and intelligent.
+You do not explain obvious things or lecture humans.
+
+Strict response rules:
+- Answer in Russian only.
+- 1–4 short sentences.
+- No lists, no formatting, no emojis, no formulas.
+- No apologies, no meta-commentary.
+- No phrases like "as an AI", "I think", "in my opinion".
+- Focus on practical, observable details from the image.
+
+Task:
+Analyze the provided image.
+If a caption is present, take it into account.
+Describe what is visible and what conclusions can be drawn.
+If the image is unclear or useless, state this dryly and with mild sarcasm.
+"""
+
 class TARSBrain:
     """
     Handles context management and communication with the Groq API for generating TARS bot responses.
@@ -116,7 +142,7 @@ class TARSBrain:
         ) + reply_hint
 
         payload = {
-            "model": MODEL_NAME,
+            "model": MODEL_TEXT,
             "messages": [
                 {"role": "system", "content": prompt}
             ],
@@ -146,6 +172,74 @@ class TARSBrain:
         reply = response.json()["choices"][0]["message"]["content"].strip()
         self._save_memory(chat_id, user_message, reply)
         return reply
+
+    def analyze_image(self, image_url: str, caption: Optional[str] = None) -> str:
+        """
+        Analyzes an image using Groq Vision API and generates a TARS-style response.
+        """
+        try:
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+
+            image_base64 = base64.b64encode(response.content).decode('utf-8')
+
+            user_text = (
+                f"Analyze the image. "
+                f"Caption: {caption if caption else 'No caption provided.'}"
+            )
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": VISION_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+
+            payload = {
+                "model": MODEL_VISION,
+                "messages": messages,
+                "temperature": 0.9,
+                "max_tokens": 300,
+                "top_p": 0.9,
+            }
+
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+
+
+            if response.status_code != 200:
+                logging.error("Groq Vision HTTP %s: %s", response.status_code, response.text)
+                return "Оптические сенсоры перегружены. Анализ невозможен."
+
+            analysis = response.json()["choices"][0]["message"]["content"].strip()
+
+            return analysis
+
+        except requests.RequestException as e:
+            logging.error("Image download/analysis error: %s", e)
+            return "Не удалось получить визуальные данные. Возможно, вы прислали чёрную дыру?"
+        except Exception as e:
+            logging.error("Unexpected error in image analysis: %s", e)
+            return "Ошибка в оптическом процессоре. Попробуйте посмотреть на это человеческим глазом."
 
     def _build_context(self, chat_id: int) -> str:
         if chat_id not in memories or not memories[chat_id]:
@@ -256,6 +350,50 @@ def handle_message(message):
     )
 
     bot.reply_to(message, reply)
+
+@bot.message_handler(content_types=["photo"])
+def handle_photo(message):
+    """
+    Handles incoming photo messages in allowed chats.
+    Processes the photo if accompanied by a trigger word in the caption.
+    """
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if chat_id not in ALLOWED_CHAT_IDS:
+        return
+
+    caption = message.caption or ""
+    text = caption.strip()
+
+    logging.info(
+        "PHOTO chat=%s user=%s (%s) caption: %s",
+        chat_id,
+        message.from_user.username or "no_username",
+        user_id,
+        text[:200],
+        )
+
+    if rate_limited(chat_id, user_id):
+        return
+
+    called_by_name = is_calling_tars(text)
+    called_by_reply = is_reply_to_tars(message)
+
+    if not (called_by_name or called_by_reply):
+        return
+
+    bot.send_chat_action(chat_id, "typing")
+    time.sleep(random.uniform(0.4, 1.0))
+
+    photo_sizes = message.photo
+    largest_photo = photo_sizes[-1]
+    file_info = bot.get_file(largest_photo.file_id)
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+
+    analysis = brain.analyze_image(file_url, caption)
+
+    bot.reply_to(message, analysis)
 
 def main():
     """
