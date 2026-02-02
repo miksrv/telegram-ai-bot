@@ -5,6 +5,7 @@ Secure, minimalist, multichat Telegram bot
 """
 
 import os
+from dotenv import load_dotenv
 import time
 import re
 import random
@@ -17,6 +18,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import telebot
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 logging.basicConfig(
