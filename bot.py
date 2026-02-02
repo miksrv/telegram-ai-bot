@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TARS v1.0
+TARS v1.1 Optimized
 Secure, minimalist, multichat Telegram bot
 """
 
@@ -9,13 +9,16 @@ import time
 import re
 import random
 import logging
-from collections import defaultdict, deque
-from typing import Deque, Dict, Tuple, Optional
 import base64
+from collections import deque
+from typing import Deque, Dict, Tuple, Optional, Set
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import telebot
 
+# --- CONFIGURATION ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -27,36 +30,39 @@ def require_env(name: str) -> str:
         raise RuntimeError(f"ENV variable {name} is not set")
     return value
 
-def parse_chat_ids(raw: str) -> set[int]:
-    return {int(x.strip()) for x in raw.split(",") if x.strip()}
+def parse_chat_ids(raw: str) -> Set[int]:
+    try:
+        return {int(x.strip()) for x in raw.split(",") if x.strip()}
+    except ValueError:
+        logging.error("Invalid ALLOWED_CHAT_IDS format")
+        return set()
 
+# Environmental Variables
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
-
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
-ADMIN_ID = int(require_env("ADMIN_ID"))
 
+# Constants
 MODEL_TEXT = "llama-3.1-8b-instant"
 MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MAX_INPUT_CHARS = 1500
-MAX_CONTEXT_MESSAGES = 6
-MEMORY_LIMIT = 40
-USER_COOLDOWN_SECONDS = 6
+MAX_CONTEXT_MESSAGES = 10  # Немного увеличил для лучшей связности
+MEMORY_LIMIT = 50
+USER_COOLDOWN_SECONDS = 5
+MEMORY_TTL_SECONDS = 3600 * 24  # Очистка памяти чатов, не активных 24 часа
 
-TRIGGERS = ("тарс", "tars")
+TRIGGERS = {"тарс", "tars", "tars,", "тарс,"} # Set быстрее list/tuple для проверки in
+
+# --- NETWORK OPTIMIZATION ---
+# Используем одну сессию для переиспользования TCP-соединений (Keep-Alive)
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+session.mount("https://", HTTPAdapter(max_retries=retries))
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
-MemoryKey = Tuple[int, int]        # (chat_id, user_id)
-MemoryItem = Tuple[str, str]       # (role, text)
-
-memories: Dict[MemoryKey, Deque[MemoryItem]] = defaultdict(
-    lambda: deque(maxlen=MEMORY_LIMIT)
-)
-
-cooldowns: Dict[Tuple[int, int], float] = {}
-
+# --- PROMPTS ---
 GENERAL_PROMPT = """
 You are TARS, an autonomous robot from the movie “Interstellar”.
 You are present in a Telegram chat of amateur astronomers and communicate with humans directly.
@@ -153,56 +159,103 @@ If the image is weak or limited, state this dryly, with restrained sarcasm.
 Finish naturally, without a forced conclusion or summary.
 """
 
+# --- MEMORY MANAGEMENT ---
+class MemoryManager:
+    def __init__(self):
+        # Структура: chat_id -> {"last_access": timestamp, "history": deque}
+        self.storage: Dict[int, Dict] = {}
+
+    def get_context(self, chat_id: int) -> str:
+        if chat_id not in self.storage:
+            return "No context."
+
+        # Обновляем время доступа
+        self.storage[chat_id]["last_access"] = time.time()
+
+        history = self.storage[chat_id]["history"]
+        lines = []
+        # Берем последние N сообщений
+        for role, text in list(history)[-MAX_CONTEXT_MESSAGES:]:
+            speaker = "Пользователь" if role == "user" else "TARS"
+            lines.append(f"{speaker}: {text}")
+        return "\n".join(lines)
+
+    def add_memory(self, chat_id: int, user_msg: str, bot_reply: str):
+        if chat_id not in self.storage:
+            self.storage[chat_id] = {
+                "last_access": time.time(),
+                "history": deque(maxlen=MEMORY_LIMIT)
+            }
+
+        self.storage[chat_id]["last_access"] = time.time()
+        self.storage[chat_id]["history"].append(("user", user_msg))
+        self.storage[chat_id]["history"].append(("assistant", bot_reply))
+
+    def get_stats(self, chat_id: int) -> Tuple[int, int]:
+        if chat_id not in self.storage:
+            return 0, 0
+        total = len(self.storage[chat_id]["history"])
+        used = min(total, MAX_CONTEXT_MESSAGES)
+        return used, total
+
+    def cleanup(self):
+        """Удаляет старые сессии для освобождения RAM"""
+        now = time.time()
+        expired_chats = [
+            chat_id for chat_id, data in self.storage.items()
+            if now - data["last_access"] > MEMORY_TTL_SECONDS
+        ]
+        for chat_id in expired_chats:
+            del self.storage[chat_id]
+        if expired_chats:
+            logging.info(f"Cleaned up memory for {len(expired_chats)} inactive chats")
+
+memory = MemoryManager()
+cooldowns: Dict[int, float] = {} # Key: user_id (global cooldown per user)
+
+# --- CORE LOGIC ---
 class TARSBrain:
-    def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool) -> str:
-        context = self._build_context(chat_id, user_id)
+    def think(self, chat_id: int, user_message: str, is_reply: bool) -> str:
+        context = memory.get_context(chat_id)
 
-        reply_hint = ""
+        system_content = GENERAL_PROMPT.format(context=context, message=user_message)
         if is_reply:
-            reply_hint = "\n\nSystem note: the user is replying to your previous response."
-
-        prompt = GENERAL_PROMPT.format(
-            context=context,
-            message=user_message
-        ) + reply_hint
+            system_content += "\n(User is replying to your previous message)"
 
         payload = {
             "model": MODEL_TEXT,
-            "messages": [{"role": "system", "content": prompt}],
-            "temperature": 0.9,
+            "messages": [{"role": "system", "content": system_content}],
+            "temperature": 0.8, # Чуть снизил для большей точности
             "max_tokens": 800,
             "top_p": 0.95,
         }
 
         try:
-            response = requests.post(
+            response = session.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
                 json=payload,
-                timeout=8,
+                timeout=5
             )
-        except requests.RequestException as e:
-            logging.error("Groq API error: %s", e)
-            return "Связь потеряна. Вероятность успеха: 12%."
-
-        if response.status_code != 200:
-            logging.error("Groq HTTP %s: %s", response.status_code, response.text)
-            return "Ошибка вычислительного модуля."
-
-        reply = response.json()["choices"][0]["message"]["content"].strip()
-        self._save_memory(chat_id, user_id, user_message, reply)
-        return reply
+            response.raise_for_status()
+            reply = response.json()["choices"][0]["message"]["content"].strip()
+            memory.add_memory(chat_id, user_message, reply)
+            return reply
+        except Exception as e:
+            logging.error(f"Text gen error: {e}")
+            return "Сбой логического модуля. Данные повреждены."
 
     def analyze_image(self, image_url: str, caption: Optional[str]) -> str:
         try:
-            response = requests.get(image_url, timeout=10)
+            # 1. Скачиваем картинку (используем session для ускорения)
+            response = session.get(image_url, timeout=10)
             response.raise_for_status()
 
+            # 2. Кодируем в Base64 (без сжатия, раз старый код работал хорошо)
             image_base64 = base64.b64encode(response.content).decode("utf-8")
 
+            # 3. Восстанавливаем точную структуру сообщений из старого кода
+            # (System role отдельно, User role отдельно)
             messages = [
                 {"role": "system", "content": VISION_PROMPT},
                 {
@@ -222,21 +275,23 @@ class TARSBrain:
             payload = {
                 "model": MODEL_VISION,
                 "messages": messages,
-                "temperature": 0.9,
+                "temperature": 0.9,  # Вернул настройки как было
                 "max_tokens": 300,
                 "top_p": 0.9,
             }
 
-            response = requests.post(
+            # 4. Отправляем через session (оптимизация)
+            response = session.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json", # Явно указываем заголовок
                 },
                 json=payload,
                 timeout=15,
             )
 
+            # Логируем текст ошибки, если статус не 200, чтобы понимать причину
             if response.status_code != 200:
                 logging.error("Groq Vision HTTP %s: %s", response.status_code, response.text)
                 return "Оптические сенсоры перегружены."
@@ -244,132 +299,99 @@ class TARSBrain:
             return response.json()["choices"][0]["message"]["content"].strip()
 
         except Exception as e:
-            logging.error("Vision error: %s", e)
+            logging.error(f"Vision error: {e}")
             return "Ошибка визуального модуля."
-
-    def _build_context(self, chat_id: int, user_id: int) -> str:
-        key = (chat_id, user_id)
-        if key not in memories or not memories[key]:
-            return "Контекст отсутствует."
-
-        lines = []
-        for role, text in list(memories[key])[-MAX_CONTEXT_MESSAGES:]:
-            speaker = "Пользователь" if role == "user" else "TARS"
-            lines.append(f"{speaker}: {text}")
-
-        return "\n".join(lines)
-
-    def _save_memory(self, chat_id: int, user_id: int, user_msg: str, reply: str) -> None:
-        key = (chat_id, user_id)
-        memories[key].append(("user", user_msg))
-        memories[key].append(("assistant", reply))
 
 brain = TARSBrain()
 
-def is_reply_to_tars(message) -> bool:
-    return (
-            message.reply_to_message
-            and message.reply_to_message.from_user
-            and message.reply_to_message.from_user.id == bot.get_me().id
-    )
+# --- UTILS ---
+# Компилируем регулярку один раз при запуске скрипта
+TRIGGER_REGEX = re.compile(r"\b(" + "|".join(re.escape(t) for t in TRIGGERS) + r")\b", re.IGNORECASE)
 
 def is_calling_tars(text: str) -> bool:
-    if not text:
-        return False
-    words = re.findall(r"[a-zа-яё]+", text.lower())
-    return any(w in TRIGGERS for w in words)
+    if not text: return False
+    return bool(TRIGGER_REGEX.search(text))
 
-def rate_limited(chat_id: int, user_id: int) -> bool:
-    key = (chat_id, user_id)
-    now = time.time()
-    last = cooldowns.get(key, 0)
-    if now - last < USER_COOLDOWN_SECONDS:
-        return True
-    cooldowns[key] = now
-    return False
+def is_reply_to_bot(message) -> bool:
+    return (
+            message.reply_to_message and
+            message.reply_to_message.from_user and
+            message.reply_to_message.from_user.id == bot.get_me().id
+    )
 
-def extract_photo_and_caption(message):
-    if message.photo:
-        return message.photo, message.caption or ""
+def extract_photo_url(message) -> Tuple[Optional[str], Optional[str]]:
+    """Возвращает (url, caption) или (None, None)"""
+    target_msg = message
+
+    # Если это реплай на картинку
     if message.reply_to_message and message.reply_to_message.photo:
-        return message.reply_to_message.photo, message.text or ""
-    return None, None
+        target_msg = message.reply_to_message
 
-def get_memory_stats(chat_id: int) -> tuple[int, int]:
-    """
-    Returns (used_context_messages, total_memory_items)
-    """
-    total_items = len(memories.get(chat_id, []))
-    used_context = min(total_items, MAX_CONTEXT_MESSAGES)
-    return used_context, total_items
+    if not target_msg.photo:
+        return None, None
+
+    largest_photo = target_msg.photo[-1]
+    file_info = bot.get_file(largest_photo.file_id)
+    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+    # Caption берем из исходного сообщения (если есть) или из сообщения с фото
+    caption = message.text or message.caption or target_msg.caption or ""
+    return url, caption
+
+# --- HANDLERS ---
 
 @bot.message_handler(content_types=["text", "photo"])
-def handle_message(message):
+def main_handler(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
+
+    # Периодическая очистка памяти (шанс 5% при каждом сообщении, чтобы не грузить таймер)
+    if random.random() < 0.05:
+        memory.cleanup()
 
     if chat_id not in ALLOWED_CHAT_IDS:
         return
 
-    photos, caption = extract_photo_and_caption(message)
-    text = message.text or caption or ""
+    # Получаем текст и фото
+    photo_url, caption = extract_photo_url(message)
+    text_content = message.text or message.caption or ""
 
-    called_by_reply = is_reply_to_tars(message)
-    called_by_name = is_calling_tars(text)
+    has_trigger = is_calling_tars(text_content)
+    is_reply = is_reply_to_bot(message)
 
-    if not (called_by_name or called_by_reply):
+    # Если нет триггера и нет реплая - игнор (кроме случая, когда это реплай на фото с триггером)
+    if not (has_trigger or is_reply):
         return
 
-    if rate_limited(chat_id, user_id):
-        return
+    # Cooldown check
+    now = time.time()
+    if now - cooldowns.get(user_id, 0) < USER_COOLDOWN_SECONDS:
+        return # Silent ignore
+    cooldowns[user_id] = now
 
-    used_context, total_memory = get_memory_stats(chat_id)
-
-    logging.info(
-        "TARS input | chat=%s user=%s reply=%s context_used=%s/%s memory_used=%s/%s",
-        chat_id,
-        user_id,
-        called_by_reply,
-        used_context,
-        MAX_CONTEXT_MESSAGES,
-        total_memory,
-        MEMORY_LIMIT,
-    )
+    # Logging & Typing
+    used_ctx, total_mem = memory.get_stats(chat_id)
+    logging.info(f"Processing | chat={chat_id} user={user_id} type={'IMG' if photo_url else 'TXT'} mem={used_ctx}/{total_mem}")
 
     bot.send_chat_action(chat_id, "typing")
-    time.sleep(random.uniform(0.4, 1.0))
+    time.sleep(random.uniform(0.5, 1.2)) # Имитация "думания"
 
-    if photos:
-        largest = photos[-1]
-        file = bot.get_file(largest.file_id)
-        url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-        reply = brain.analyze_image(url, caption)
+    if photo_url and (has_trigger or is_reply):
+        reply = brain.analyze_image(photo_url, caption)
     else:
-        reply = brain.think(
-            chat_id,
-            user_id,
-            text[:MAX_INPUT_CHARS],
-            is_reply=called_by_reply,
-        )
+        reply = brain.think(chat_id, text_content[:MAX_INPUT_CHARS], is_reply)
 
-    bot.reply_to(message, reply)
-
-def main():
-    logging.info("TARS started in multi-chat mode")
-    logging.info("Allowed chats: %s", ", ".join(map(str, ALLOWED_CHAT_IDS)))
-    while True:
-        try:
-            bot.infinity_polling(
-                skip_pending=True,
-                timeout=20,
-                long_polling_timeout=20,
-            )
-        except requests.exceptions.ReadTimeout:
-            logging.warning("Telegram API timeout, reconnecting...")
-            time.sleep(5)
-        except Exception as e:
-            logging.exception("Unexpected error")
-            time.sleep(10)
+    try:
+        bot.reply_to(message, reply)
+    except telebot.apihelper.ApiTelegramException as e:
+        logging.error(f"Telegram API Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    logging.info("TARS v1.1 Systems Online")
+    logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
+
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            logging.critical(f"Critical Crash: {e}")
+            time.sleep(10)
