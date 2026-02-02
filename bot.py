@@ -295,6 +295,14 @@ def extract_photo_and_caption(message):
         return message.reply_to_message.photo, message.text or ""
     return None, None
 
+def get_memory_stats(chat_id: int) -> tuple[int, int]:
+    """
+    Returns (used_context_messages, total_memory_items)
+    """
+    total_items = len(memories.get(chat_id, []))
+    used_context = min(total_items, MAX_CONTEXT_MESSAGES)
+    return used_context, total_items
+
 @bot.message_handler(content_types=["text", "photo"])
 def handle_message(message):
     chat_id = message.chat.id
@@ -306,11 +314,27 @@ def handle_message(message):
     photos, caption = extract_photo_and_caption(message)
     text = message.text or caption or ""
 
-    if not (is_calling_tars(text) or is_reply_to_tars(message)):
+    called_by_reply = is_reply_to_tars(message)
+    called_by_name = is_calling_tars(text)
+
+    if not (called_by_name or called_by_reply):
         return
 
     if rate_limited(chat_id, user_id):
         return
+
+    used_context, total_memory = get_memory_stats(chat_id)
+
+    logging.info(
+        "TARS input | chat=%s user=%s reply=%s context_used=%s/%s memory_used=%s/%s",
+        chat_id,
+        user_id,
+        called_by_reply,
+        used_context,
+        MAX_CONTEXT_MESSAGES,
+        total_memory,
+        MEMORY_LIMIT,
+    )
 
     bot.send_chat_action(chat_id, "typing")
     time.sleep(random.uniform(0.4, 1.0))
@@ -325,7 +349,7 @@ def handle_message(message):
             chat_id,
             user_id,
             text[:MAX_INPUT_CHARS],
-            is_reply=is_reply_to_tars(message),
+            is_reply=called_by_reply,
         )
 
     bot.reply_to(message, reply)
