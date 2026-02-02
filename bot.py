@@ -22,19 +22,12 @@ logging.basicConfig(
 )
 
 def require_env(name: str) -> str:
-    """
-    Returns the value of the specified environment variable.
-    Raises RuntimeError if the variable is not set.
-    """
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"ENV variable {name} is not set")
     return value
 
 def parse_chat_ids(raw: str) -> set[int]:
-    """
-    Parses a comma-separated string of chat IDs and returns a set of integers.
-    """
     return {int(x.strip()) for x in raw.split(",") if x.strip()}
 
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
@@ -42,24 +35,27 @@ ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
 ADMIN_ID = int(require_env("ADMIN_ID"))
+
 MODEL_TEXT = "llama-3.1-8b-instant"
 MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
+
 MAX_INPUT_CHARS = 1500
 MAX_CONTEXT_MESSAGES = 6
 MEMORY_LIMIT = 40
 USER_COOLDOWN_SECONDS = 6
+
 TRIGGERS = ("тарс", "tars")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
-MemoryKey = Tuple[int, int]
-MemoryItem = Tuple[str, str]
+MemoryKey = Tuple[int, int]        # (chat_id, user_id)
+MemoryItem = Tuple[str, str]       # (role, text)
 
-memories: Dict[int, Deque[MemoryItem]] = defaultdict(
+memories: Dict[MemoryKey, Deque[MemoryItem]] = defaultdict(
     lambda: deque(maxlen=MEMORY_LIMIT)
 )
 
-cooldowns: Dict[int, float] = {}
+cooldowns: Dict[Tuple[int, int], float] = {}
 
 GENERAL_PROMPT = """
 You are TARS, an autonomous robot from the movie “Interstellar”.
@@ -158,20 +154,12 @@ Finish naturally, without a forced conclusion or summary.
 """
 
 class TARSBrain:
-    """
-    Handles context management and communication with the Groq API for generating TARS bot responses.
-    Maintains chat memory, builds prompts, and processes replies for each chat session.
-    """
-    def think(self, chat_id: int, user_message: str, is_reply: bool = False) -> str:
-        context = self._build_context(chat_id)
+    def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool) -> str:
+        context = self._build_context(chat_id, user_id)
 
         reply_hint = ""
         if is_reply:
-            reply_hint = (
-                "\n\n"
-                "System note: the user is replying to your previous response. "
-                "Continue the dialogue logically and concisely."
-            )
+            reply_hint = "\n\nSystem note: the user is replying to your previous response."
 
         prompt = GENERAL_PROMPT.format(
             context=context,
@@ -180,9 +168,7 @@ class TARSBrain:
 
         payload = {
             "model": MODEL_TEXT,
-            "messages": [
-                {"role": "system", "content": prompt}
-            ],
+            "messages": [{"role": "system", "content": prompt}],
             "temperature": 0.9,
             "max_tokens": 800,
             "top_p": 0.95,
@@ -207,33 +193,22 @@ class TARSBrain:
             return "Ошибка вычислительного модуля."
 
         reply = response.json()["choices"][0]["message"]["content"].strip()
-        self._save_memory(chat_id, user_message, reply)
+        self._save_memory(chat_id, user_id, user_message, reply)
         return reply
 
-    def analyze_image(self, image_url: str, caption: Optional[str] = None) -> str:
-        """
-        Analyzes an image using Groq Vision API and generates a TARS-style response.
-        """
+    def analyze_image(self, image_url: str, caption: Optional[str]) -> str:
         try:
             response = requests.get(image_url, timeout=10)
             response.raise_for_status()
 
-            image_base64 = base64.b64encode(response.content).decode('utf-8')
-
-            user_text = (
-                f"Analyze the image. "
-                f"Caption: {caption if caption else 'No caption provided.'}"
-            )
+            image_base64 = base64.b64encode(response.content).decode("utf-8")
 
             messages = [
-                {
-                    "role": "system",
-                    "content": VISION_PROMPT
-                },
+                {"role": "system", "content": VISION_PROMPT},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_text},
+                        {"type": "text", "text": caption or "Analyze the image."},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -262,108 +237,62 @@ class TARSBrain:
                 timeout=15,
             )
 
-
             if response.status_code != 200:
                 logging.error("Groq Vision HTTP %s: %s", response.status_code, response.text)
-                return "Оптические сенсоры перегружены. Анализ невозможен."
+                return "Оптические сенсоры перегружены."
 
-            analysis = response.json()["choices"][0]["message"]["content"].strip()
+            return response.json()["choices"][0]["message"]["content"].strip()
 
-            return analysis
-
-        except requests.RequestException as e:
-            logging.error("Image download/analysis error: %s", e)
-            return "Не удалось получить визуальные данные. Возможно, вы прислали чёрную дыру?"
         except Exception as e:
-            logging.error("Unexpected error in image analysis: %s", e)
-            return "Ошибка в оптическом процессоре. Попробуйте посмотреть на это человеческим глазом."
+            logging.error("Vision error: %s", e)
+            return "Ошибка визуального модуля."
 
-    def _build_context(self, chat_id: int) -> str:
-        if chat_id not in memories or not memories[chat_id]:
+    def _build_context(self, chat_id: int, user_id: int) -> str:
+        key = (chat_id, user_id)
+        if key not in memories or not memories[key]:
             return "Контекст отсутствует."
 
         lines = []
-        for role, text in list(memories[chat_id])[-MAX_CONTEXT_MESSAGES:]:
+        for role, text in list(memories[key])[-MAX_CONTEXT_MESSAGES:]:
             speaker = "Пользователь" if role == "user" else "TARS"
             lines.append(f"{speaker}: {text}")
 
         return "\n".join(lines)
 
-    def _save_memory(self, chat_id: int, user_msg: str, reply: str) -> None:
-        memories[chat_id].append(("user", user_msg))
-        memories[chat_id].append(("assistant", reply))
+    def _save_memory(self, chat_id: int, user_id: int, user_msg: str, reply: str) -> None:
+        key = (chat_id, user_id)
+        memories[key].append(("user", user_msg))
+        memories[key].append(("assistant", reply))
 
 brain = TARSBrain()
 
 def is_reply_to_tars(message) -> bool:
-    """
-    Checks if the given message is a reply to a message sent by the bot.
-    Returns True if the message is replying to the bot, otherwise False.
-    """
-    if not message.reply_to_message:
-        return False
-
-    if not message.reply_to_message.from_user:
-        return False
-
-    return message.reply_to_message.from_user.id == bot.get_me().id
+    return (
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == bot.get_me().id
+    )
 
 def is_calling_tars(text: str) -> bool:
-    """
-    Determines if the message text is addressing the TARS bot.
-
-    Returns True if the text contains a trigger word (e\.g\., "tars" or "тарс") or, with a small probability,
-    if the message contains a question mark\.
-    """
     if not text:
         return False
-
-    t = text.lower()
-
-    words = re.findall(r"[a-zа-яё]+", t)
-
-    if any(word in TRIGGERS for word in words):
-        return True
-
-    if "?" in t and random.random() < 0.08:
-        return True
-
-    return False
+    words = re.findall(r"[a-zа-яё]+", text.lower())
+    return any(w in TRIGGERS for w in words)
 
 def rate_limited(chat_id: int, user_id: int) -> bool:
-    """
-    Checks if the user is currently rate-limited in the given chat.
-
-    Returns True if the user must wait before sending another message,
-    otherwise updates the cooldown and returns False.
-    """
     key = (chat_id, user_id)
     now = time.time()
     last = cooldowns.get(key, 0)
-
     if now - last < USER_COOLDOWN_SECONDS:
         return True
-
     cooldowns[key] = now
     return False
 
 def extract_photo_and_caption(message):
-    """
-    Returns (photo, caption) from the message itself or from the replied message.
-    If no photo is found, returns (None, None).
-    """
     if message.photo:
         return message.photo, message.caption or ""
-
     if message.reply_to_message and message.reply_to_message.photo:
-        caption = (
-                message.text
-                or message.caption
-                or message.reply_to_message.caption
-                or ""
-        )
-        return message.reply_to_message.photo, caption
-
+        return message.reply_to_message.photo, message.text or ""
     return None, None
 
 @bot.message_handler(content_types=["text", "photo"])
@@ -375,13 +304,9 @@ def handle_message(message):
         return
 
     photos, caption = extract_photo_and_caption(message)
-
-    called_by_reply = is_reply_to_tars(message)
     text = message.text or caption or ""
 
-    called_by_name = is_calling_tars(text)
-
-    if not (called_by_name or called_by_reply):
+    if not (is_calling_tars(text) or is_reply_to_tars(message)):
         return
 
     if rate_limited(chat_id, user_id):
@@ -390,32 +315,24 @@ def handle_message(message):
     bot.send_chat_action(chat_id, "typing")
     time.sleep(random.uniform(0.4, 1.0))
 
-    # 🖼️ There is an image — vision
     if photos:
-        largest_photo = photos[-1]
-        file_info = bot.get_file(largest_photo.file_id)
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        largest = photos[-1]
+        file = bot.get_file(largest.file_id)
+        url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        reply = brain.analyze_image(url, caption)
+    else:
+        reply = brain.think(
+            chat_id,
+            user_id,
+            text[:MAX_INPUT_CHARS],
+            is_reply=is_reply_to_tars(message),
+        )
 
-        reply = brain.analyze_image(file_url, caption)
-        bot.reply_to(message, reply)
-        return
-
-    # 💬 Text only — standard response
-    reply = brain.think(
-        chat_id,
-        text[:MAX_INPUT_CHARS],
-        is_reply=called_by_reply
-    )
     bot.reply_to(message, reply)
 
 def main():
-    """
-    Starts the TARS Telegram bot in multi-chat mode.
-    Logs startup information and begins polling for new messages.
-    """
     logging.info("TARS started in multi-chat mode")
     logging.info("Allowed chats: %s", ", ".join(map(str, ALLOWED_CHAT_IDS)))
-
     while True:
         try:
             bot.infinity_polling(
