@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS user_profile (
     avg_rudeness REAL DEFAULT 0.0,
     avg_verbosity REAL DEFAULT 0.5,
     interests TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
     last_updated INTEGER
 )
 """)
@@ -156,7 +157,8 @@ You respond to a user message in Russian and always output **valid JSON only** w
     "rudeness": 0..1,
     "verbosity": 0..1,
     "interests": ["list of user interests relevant to this message"]
-  }}
+  }},
+  "notes": "<short, concise, updated summary of the user, to fully replace previous notes>"
 }}
 
 Rules for TARS response:
@@ -165,6 +167,15 @@ Rules for TARS response:
 - Humor is subtle, deadpan, controlled.
 - Do not use markdown, emojis, greetings, apologies.
 - Never output anything outside the JSON object.
+
+Instructions for TARS:
+- "reply" must be concise, dry, technical, and factual in Russian.
+- "profile_update" should contain numeric tendencies and relevant interests extracted from the message.
+- "notes" must be a short summary of the user: name, key interests, behavioral hints, preferences, or notable facts.
+- "notes" will fully replace any previous value in the database; do not append, do not include irrelevant details.
+- Always remain factual, restrained, dry, and slightly ironic when appropriate.
+- Never include greetings, apologies, or meta-comments.
+- Do not repeat conversation history, only use it to generate concise, factual summary and profile updates.
 
 User profile interpretation rules (apply automatically to your responses):
 - Offtopic tendency (0..1):
@@ -343,11 +354,12 @@ class TARSBrain:
             f"- Spam tendency: {profile['avg_spam']:.2f}\n"
             f"- Rudeness tendency: {profile['avg_rudeness']:.2f}\n"
             f"- Verbosity: {profile['avg_verbosity']:.2f}\n"
-            f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}"
+            f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}\n"
+            f"- Notes: {profile['notes'] if profile['notes'] else 'none'}"
         )
 
         system_content = GENERAL_PROMPT_JSON.format(
-            context=context,
+            context=memory.get_chat_context(chat_id),
             user_profile_summary=profile_summary,
             message=user_message
         )
@@ -375,6 +387,7 @@ class TARSBrain:
                 data = json.loads(raw_content)
                 reply_text = data.get("reply", "Ошибка: пустой ответ")
                 profile_update = data.get("profile_update", {})
+                new_notes = data.get("notes")
             except json.JSONDecodeError:
                 logging.error(f"JSON parse error: {raw_content}")
                 reply_text = "Ошибка логического модуля"
@@ -392,9 +405,16 @@ class TARSBrain:
                     f"provocation={profile_update.get('provocation')}, "
                     f"spam={profile_update.get('spam')}, "
                     f"rudeness={profile_update.get('rudeness')}, "
-                    f"verbosity={profile_update.get('verbosity')}, "
-                    f"interests={profile_update.get('interests')}"
+                    f"verbosity={profile_update.get('verbosity')}"
                 )
+
+            if new_notes:
+                cursor.execute("""
+                    UPDATE user_profile
+                    SET notes=?, last_updated=?
+                    WHERE user_id=?
+                """, (new_notes, int(time.time()), user_id))
+                conn.commit()
 
             return reply_text
 
@@ -467,7 +487,7 @@ TRIGGER_REGEX = re.compile(r"\b(" + "|".join(re.escape(t) for t in TRIGGERS) + r
 
 def get_user_profile(user_id):
     row = cursor.execute("""
-        SELECT message_count, avg_offtopic, avg_provocation, avg_spam, avg_rudeness, avg_verbosity, interests
+        SELECT message_count, avg_offtopic, avg_provocation, avg_spam, avg_rudeness, avg_verbosity, interests, notes
         FROM user_profile WHERE user_id=?
     """, (user_id,)).fetchone()
 
@@ -485,7 +505,8 @@ def get_user_profile(user_id):
             "avg_spam": 0.0,
             "avg_rudeness": 0.0,
             "avg_verbosity": 0.5,
-            "interests": []
+            "interests": [],
+            "notes": ""
         }
 
     return {
@@ -495,7 +516,8 @@ def get_user_profile(user_id):
         "avg_spam": row[3],
         "avg_rudeness": row[4],
         "avg_verbosity": row[5],
-        "interests": row[6].split(",") if row[6] else []
+        "interests": row[6].split(",") if row[6] else [],
+        "notes": row[7] or ""
     }
 
 def update_user_profile(user_id, profile_update):
@@ -537,6 +559,24 @@ def update_user_profile(user_id, profile_update):
             interests=excluded.interests,
             last_updated=excluded.last_updated
     """, (user_id, count, avg_offtopic, avg_provocation, avg_spam, avg_rudeness, avg_verbosity, interests_str, int(time.time())))
+    conn.commit()
+
+def update_user_notes(user_id, new_info: str):
+    profile = get_user_profile(user_id)
+    existing_notes = profile.get("notes", "")
+
+    # Если новая информация уже есть — пропускаем
+    if new_info in existing_notes:
+        return
+
+    # Добавляем новую информацию, отделяя точкой с пробелом
+    updated_notes = (existing_notes + ". " + new_info).strip(". ")
+
+    cursor.execute("""
+        UPDATE user_profile
+        SET notes=?, last_updated=?
+        WHERE user_id=?
+    """, (updated_notes, int(time.time()), user_id))
     conn.commit()
 
 def is_calling_tars(text: str) -> bool:
