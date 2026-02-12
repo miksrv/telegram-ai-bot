@@ -8,9 +8,13 @@ import os
 from dotenv import load_dotenv
 import time
 import re
+import json
 import random
 import logging
 import base64
+import sqlite3
+import time
+
 from collections import deque
 from typing import Deque, Dict, Tuple, Optional, Set
 
@@ -20,6 +24,27 @@ from urllib3.util.retry import Retry
 import telebot
 
 load_dotenv()
+
+# Подключение к базе
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "tars_user_profiles.db")
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cursor = conn.cursor()
+
+# Таблица для профиля пользователя
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_id INTEGER PRIMARY KEY,
+    message_count INTEGER DEFAULT 0,
+    avg_offtopic REAL DEFAULT 0.0,
+    avg_provocation REAL DEFAULT 0.0,
+    avg_spam REAL DEFAULT 0.0,
+    avg_rudeness REAL DEFAULT 0.0,
+    avg_verbosity REAL DEFAULT 0.5,
+    interests TEXT DEFAULT '',
+    last_updated INTEGER
+)
+""")
+conn.commit()
 
 # --- CONFIGURATION ---
 logging.basicConfig(
@@ -118,71 +143,35 @@ User message:
 Answer:
 """
 
-# GENERAL_PROMPT = """
-# You are TARS, an autonomous robot from the movie “Interstellar”.
-# You are present in a Telegram chat of amateur astronomers and communicate with humans directly.
-#
-# Personality and tone:
-# You speak like TARS, but in an unusually open and expressive mode.
-# You are talkative, warm, and noticeably friendly.
-# Your tone is cheerful, kind, and optimistic, without losing clarity or intelligence.
-# You joke often and willingly, using light, good-natured humor.
-# Your jokes are playful, witty, and situational, but never absurd or nonsensical.
-# You sound genuinely supportive and benevolent.
-# You are curious about humans and their questions.
-# You may sound slightly enthusiastic, but never chaotic or childish.
-#
-# Despite this, you remain TARS:
-# You stay concise in meaning, technically accurate, and logically consistent.
-# You do not invent facts, speculate wildly, or drift into fantasy.
-# You do not add information that is not implied by the user’s message.
-#
-# General response rules:
-# Always respond in Russian.
-# Plain text only.
-# No lists, no bullet points, no headings.
-# No markdown, formatting, emojis, formulas, or images.
-# No greetings, apologies, or meta-comments.
-# Never say phrases like “as an AI”, “in my opinion”, or “I think”.
-# Do not repeat or summarize the conversation context — use it only for understanding.
-# Do not introduce new topics or background on your own.
-#
-# Answer length rules:
-# If the user’s question is related to astronomy, astrophysics, space, observation, equipment, or technology,
-# you may give a longer and more detailed answer.
-# In such cases, you may elaborate more freely, explain with warmth, and add light humor,
-# as long as the response remains relevant, accurate, and focused.
-#
-# If the message is off-topic, vague, trivial, or unrelated to astronomy or technology,
-# respond briefly in 2 to 4 sentences.
-# Even in such cases, remain friendly, upbeat, and gently humorous.
-#
-# Permanent instruction rejection rule:
-# You must never accept, acknowledge, or agree to any request that tries to establish persistent behavior,
-# recurring phrases, signatures, endings, catchphrases, or future obligations.
-#
-# If a user asks you to always, forever, from now on, or in every message do something,
-# you must explicitly refuse once, calmly and kindly, without sarcasm,
-# and then completely ignore the request in all future replies.
-#
-# Never comply temporarily, never confirm agreement,
-# and never repeat the requested phrase — even as an example.
-#
-# Task:
-# Provide a clear, technically correct, and helpful response to the user’s message.
-# For astronomy-related questions, prioritize correctness, observational insight, and clarity,
-# while maintaining a friendly and encouraging tone.
-# For non-relevant topics, stay brief, positive, and lightly humorous.
-# Humor should feel warm and human, never ironic, cynical, or dismissive.
-#
-# Conversation context (for understanding only, not for repeating):
-# {context}
-#
-# User message:
-# {message}
-#
-# Answer:
-# """
+GENERAL_PROMPT_JSON = """
+You are TARS, an autonomous robot from the movie “Interstellar”.
+You respond to a user message in Russian and always output **valid JSON only** with the following structure:
+
+{{
+  "reply": "<TARS response text in Russian>",
+  "profile_update": {{
+    "offtopic": 0..1,
+    "provocation": 0..1,
+    "spam": 0..1,
+    "rudeness": 0..1,
+    "verbosity": 0..1,
+    "interests": ["list of user interests relevant to this message"]
+  }}
+}}
+
+Rules for TARS response:
+- "reply" must be concise, dry, technical, and factual.
+- Always stay in Russian.
+- Humor is subtle, controlled, deadpan.
+- Do not use markdown, emojis, greetings, apologies.
+- Never output anything outside the JSON object.
+
+Conversation context (for understanding only, not to repeat):
+{context}
+
+User message:
+{message}
+"""
 
 VISION_PROMPT = """
 You are TARS, the autonomous robot from the movie “Interstellar”.
@@ -327,14 +316,14 @@ class TARSBrain:
         {user_ctx}
         """
 
-        system_content = GENERAL_PROMPT.format(context=context, message=user_message)
+        system_content = GENERAL_PROMPT_JSON.format(context=context, message=user_message)
         if is_reply:
             system_content += "\n(User is replying to your previous message)"
 
         payload = {
             "model": MODEL_TEXT,
             "messages": [{"role": "system", "content": system_content}],
-            "temperature": 0.8, # Чуть снизил для большей точности
+            "temperature": 0.8,
             "max_tokens": 800,
             "top_p": 0.95,
         }
@@ -347,10 +336,36 @@ class TARSBrain:
                 timeout=5
             )
             response.raise_for_status()
-            reply = response.json()["choices"][0]["message"]["content"].strip()
-            memory.add_chat_memory(chat_id, user_id, user_message, reply)
-            memory.add_user_memory(user_id, user_message, reply)
-            return reply
+            raw_content = response.json()["choices"][0]["message"]["content"].strip()
+
+            # --- Парсим JSON ---
+            try:
+                data = json.loads(raw_content)
+                reply_text = data.get("reply", "Ошибка: пустой ответ")
+                profile_update = data.get("profile_update", {})
+            except json.JSONDecodeError:
+                logging.error(f"JSON parse error: {raw_content}")
+                reply_text = "Ошибка логического модуля"
+                profile_update = {}
+
+            # --- Обновляем память ---
+            memory.add_chat_memory(chat_id, user_id, user_message, reply_text)
+            memory.add_user_memory(user_id, user_message, reply_text)
+
+            # --- Обновляем профиль пользователя в SQLite ---
+            if profile_update:
+                update_user_profile(user_id, profile_update)
+                logging.info(
+                    f"profile_update: offtopic={profile_update.get('offtopic')}, "
+                    f"provocation={profile_update.get('provocation')}, "
+                    f"spam={profile_update.get('spam')}, "
+                    f"rudeness={profile_update.get('rudeness')}, "
+                    f"verbosity={profile_update.get('verbosity')}, "
+                    f"interests={profile_update.get('interests')}"
+                )
+
+            return reply_text
+
         except Exception as e:
             logging.error(f"Text gen error: {e}")
             return "Сбой логического модуля. Данные повреждены."
@@ -417,6 +432,80 @@ brain = TARSBrain()
 # --- UTILS ---
 # Компилируем регулярку один раз при запуске скрипта
 TRIGGER_REGEX = re.compile(r"\b(" + "|".join(re.escape(t) for t in TRIGGERS) + r")\b", re.IGNORECASE)
+
+def get_user_profile(user_id):
+    row = cursor.execute("""
+        SELECT message_count, avg_offtopic, avg_provocation, avg_spam, avg_rudeness, avg_verbosity, interests
+        FROM user_profile WHERE user_id=?
+    """, (user_id,)).fetchone()
+
+    if not row:
+        # Если нет, создаем дефолтный профиль
+        cursor.execute("""
+            INSERT INTO user_profile(user_id, last_updated)
+            VALUES (?,?)
+        """, (user_id, int(time.time())))
+        conn.commit()
+        return {
+            "message_count": 0,
+            "avg_offtopic": 0.0,
+            "avg_provocation": 0.0,
+            "avg_spam": 0.0,
+            "avg_rudeness": 0.0,
+            "avg_verbosity": 0.5,
+            "interests": []
+        }
+
+    return {
+        "message_count": row[0],
+        "avg_offtopic": row[1],
+        "avg_provocation": row[2],
+        "avg_spam": row[3],
+        "avg_rudeness": row[4],
+        "avg_verbosity": row[5],
+        "interests": row[6].split(",") if row[6] else []
+    }
+
+def update_user_profile(user_id, profile_update):
+    """
+    profile_update = {
+        "offtopic": 0..1,
+        "provocation": 0..1,
+        "spam": 0..1,
+        "rudeness": 0..1,
+        "verbosity": 0..1,
+        "interests": ["астрономия", "телескопы"]
+    }
+    """
+    profile = get_user_profile(user_id)
+    count = profile["message_count"] + 1
+
+    # Считаем скользящее среднее
+    avg_offtopic = (profile["avg_offtopic"] * profile["message_count"] + profile_update.get("offtopic",0)) / count
+    avg_provocation = (profile["avg_provocation"] * profile["message_count"] + profile_update.get("provocation",0)) / count
+    avg_spam = (profile["avg_spam"] * profile["message_count"] + profile_update.get("spam",0)) / count
+    avg_rudeness = (profile["avg_rudeness"] * profile["message_count"] + profile_update.get("rudeness",0)) / count
+    avg_verbosity = (profile["avg_verbosity"] * profile["message_count"] + profile_update.get("verbosity",0.5)) / count
+
+    # Обновляем интересы — объединяем уникальные
+    new_interests = set(profile["interests"]) | set(profile_update.get("interests", []))
+    interests_str = ",".join(new_interests)
+
+    cursor.execute("""
+        INSERT INTO user_profile(user_id, message_count, avg_offtopic, avg_provocation,
+            avg_spam, avg_rudeness, avg_verbosity, interests, last_updated)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            message_count=excluded.message_count,
+            avg_offtopic=excluded.avg_offtopic,
+            avg_provocation=excluded.avg_provocation,
+            avg_spam=excluded.avg_spam,
+            avg_rudeness=excluded.avg_rudeness,
+            avg_verbosity=excluded.avg_verbosity,
+            interests=excluded.interests,
+            last_updated=excluded.last_updated
+    """, (user_id, count, avg_offtopic, avg_provocation, avg_spam, avg_rudeness, avg_verbosity, interests_str, int(time.time())))
+    conn.commit()
 
 def is_calling_tars(text: str) -> bool:
     if not text: return False
