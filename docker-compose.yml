@@ -9,5 +9,6 @@ services:
       - .env
     volumes:
       - ./bot.py:/app/bot.py:ro
+      - ./data:/app/data
     command: python /app/bot.py
 
