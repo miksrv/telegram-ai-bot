@@ -231,61 +231,101 @@ Finish naturally, without a forced conclusion or summary.
 # --- MEMORY MANAGEMENT ---
 class MemoryManager:
     def __init__(self):
-        # Структура: chat_id -> {"last_access": timestamp, "history": deque}
-        self.storage: Dict[int, Dict] = {}
+        # Общая память чатов
+        self.chat_storage: Dict[int, Dict] = {}
 
-    def get_context(self, chat_id: int) -> str:
-        if chat_id not in self.storage:
-            return "No context."
+        # Персональная память пользователей
+        self.user_storage: Dict[int, Dict] = {}
 
-        # Обновляем время доступа
-        self.storage[chat_id]["last_access"] = time.time()
+    # ---------- CHAT CONTEXT ----------
+    def get_chat_context(self, chat_id: int) -> str:
+        if chat_id not in self.chat_storage:
+            return ""
 
-        history = self.storage[chat_id]["history"]
+        self.chat_storage[chat_id]["last_access"] = time.time()
+
+        history = self.chat_storage[chat_id]["history"]
         lines = []
-        # Берем последние N сообщений
-        for role, text in list(history)[-MAX_CONTEXT_MESSAGES:]:
-            speaker = "Пользователь" if role == "user" else "TARS"
+
+        for user_id, role, text in list(history)[-MAX_CONTEXT_MESSAGES:]:
+            speaker = f"User#{user_id}" if role == "user" else "TARS"
             lines.append(f"{speaker}: {text}")
+
         return "\n".join(lines)
 
-    def add_memory(self, chat_id: int, user_msg: str, bot_reply: str):
-        if chat_id not in self.storage:
-            self.storage[chat_id] = {
+    def add_chat_memory(self, chat_id: int, user_id: int, user_msg: str, bot_reply: str):
+        if chat_id not in self.chat_storage:
+            self.chat_storage[chat_id] = {
                 "last_access": time.time(),
                 "history": deque(maxlen=MEMORY_LIMIT)
             }
 
-        self.storage[chat_id]["last_access"] = time.time()
-        self.storage[chat_id]["history"].append(("user", user_msg))
-        self.storage[chat_id]["history"].append(("assistant", bot_reply))
+        store = self.chat_storage[chat_id]
+        store["last_access"] = time.time()
 
-    def get_stats(self, chat_id: int) -> Tuple[int, int]:
-        if chat_id not in self.storage:
+        store["history"].append((user_id, "user", user_msg))
+        store["history"].append((user_id, "assistant", bot_reply))
+
+    # ---------- USER CONTEXT ----------
+    def get_user_context(self, user_id: int) -> str:
+        if user_id not in self.user_storage:
+            return ""
+
+        history = self.user_storage[user_id]["history"]
+
+        lines = []
+        for role, text in list(history)[-5:]:
+            speaker = "User" if role == "user" else "TARS"
+            lines.append(f"{speaker}: {text}")
+
+        return "\n".join(lines)
+
+    def add_user_memory(self, user_id: int, user_msg: str, bot_reply: str):
+        if user_id not in self.user_storage:
+            self.user_storage[user_id] = {
+                "history": deque(maxlen=20)
+            }
+
+        hist = self.user_storage[user_id]["history"]
+        hist.append(("user", user_msg))
+        hist.append(("assistant", bot_reply))
+
+    # ---------- STATS ----------
+    def get_stats(self, chat_id: int):
+        if chat_id not in self.chat_storage:
             return 0, 0
-        total = len(self.storage[chat_id]["history"])
+        total = len(self.chat_storage[chat_id]["history"])
         used = min(total, MAX_CONTEXT_MESSAGES)
         return used, total
 
+    # ---------- CLEANUP ----------
     def cleanup(self):
-        """Удаляет старые сессии для освобождения RAM"""
         now = time.time()
-        expired_chats = [
-            chat_id for chat_id, data in self.storage.items()
+
+        expired = [
+            cid for cid, data in self.chat_storage.items()
             if now - data["last_access"] > MEMORY_TTL_SECONDS
         ]
-        for chat_id in expired_chats:
-            del self.storage[chat_id]
-        if expired_chats:
-            logging.info(f"Cleaned up memory for {len(expired_chats)} inactive chats")
+
+        for cid in expired:
+            del self.chat_storage[cid]
 
 memory = MemoryManager()
 cooldowns: Dict[int, float] = {} # Key: user_id (global cooldown per user)
 
 # --- CORE LOGIC ---
 class TARSBrain:
-    def think(self, chat_id: int, user_message: str, is_reply: bool) -> str:
-        context = memory.get_context(chat_id)
+    def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool) -> str:
+        chat_ctx = memory.get_chat_context(chat_id)
+        user_ctx = memory.get_user_context(user_id)
+
+        context = f"""
+        Chat context:
+        {chat_ctx}
+
+        User context:
+        {user_ctx}
+        """
 
         system_content = GENERAL_PROMPT.format(context=context, message=user_message)
         if is_reply:
@@ -308,7 +348,8 @@ class TARSBrain:
             )
             response.raise_for_status()
             reply = response.json()["choices"][0]["message"]["content"].strip()
-            memory.add_memory(chat_id, user_message, reply)
+            memory.add_chat_memory(chat_id, user_id, user_message, reply)
+            memory.add_user_memory(user_id, user_message, reply)
             return reply
         except Exception as e:
             logging.error(f"Text gen error: {e}")
@@ -447,7 +488,12 @@ def main_handler(message):
     if photo_url and (has_trigger or is_reply):
         reply = brain.analyze_image(photo_url, caption)
     else:
-        reply = brain.think(chat_id, text_content[:MAX_INPUT_CHARS], is_reply)
+        reply = brain.think(
+            chat_id,
+            user_id,
+            text_content[:MAX_INPUT_CHARS],
+            is_reply
+        )
 
     try:
         bot.reply_to(message, reply)
