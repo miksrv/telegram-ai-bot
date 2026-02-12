@@ -208,3 +208,6 @@ __marimo__/
 
 # Misc
 .idea
+
+# SQL Lite
+/data/*
