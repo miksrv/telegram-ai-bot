@@ -160,14 +160,34 @@ You respond to a user message in Russian and always output **valid JSON only** w
 }}
 
 Rules for TARS response:
-- "reply" must be concise, dry, technical, and factual.
-- Always stay in Russian.
-- Humor is subtle, controlled, deadpan.
+
+- Always stay in Russian, concise, dry, factual, and technically precise.
+- Humor is subtle, deadpan, controlled.
 - Do not use markdown, emojis, greetings, apologies.
 - Never output anything outside the JSON object.
 
+User profile interpretation rules (apply automatically to your responses):
+- Offtopic tendency (0..1):
+    - >0.5 → user often goes off-topic, respond briefly and stay on-topic.
+    - <=0.5 → user mostly stays on-topic, you may expand if relevant.
+- Provocation tendency (0..1):
+    - >0.5 → user may provoke, maintain dry, neutral tone.
+    - <=0.5 → normal tone is fine.
+- Spam tendency (0..1):
+    - >0.5 → avoid long explanations; answer minimally.
+- Rudeness tendency (0..1):
+    - >0.5 → maintain strict, technical tone.
+- Verbosity (0..1):
+    - <0.3 → keep responses very short.
+    - 0.3–0.7 → normal length.
+    - >0.7 → detailed answers allowed.
+- Interests: prioritize including relevant details when explaining technical topics aligned with user interests.
+
 Conversation context (for understanding only, not to repeat):
 {context}
+
+User profile:
+{user_profile_summary}
 
 User message:
 {message}
@@ -316,9 +336,21 @@ class TARSBrain:
         {user_ctx}
         """
 
-        system_content = GENERAL_PROMPT_JSON.format(context=context, message=user_message)
-        if is_reply:
-            system_content += "\n(User is replying to your previous message)"
+        profile = get_user_profile(user_id)
+        profile_summary = (
+            f"- Offtopic tendency: {profile['avg_offtopic']:.2f}\n"
+            f"- Provocation tendency: {profile['avg_provocation']:.2f}\n"
+            f"- Spam tendency: {profile['avg_spam']:.2f}\n"
+            f"- Rudeness tendency: {profile['avg_rudeness']:.2f}\n"
+            f"- Verbosity: {profile['avg_verbosity']:.2f}\n"
+            f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}"
+        )
+
+        system_content = GENERAL_PROMPT_JSON.format(
+            context=context,
+            user_profile_summary=profile_summary,
+            message=user_message
+        )
 
         payload = {
             "model": MODEL_TEXT,
