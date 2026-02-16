@@ -668,6 +668,7 @@ def main_handler(message):
 @bot.message_handler(commands=["status"])
 def status_handler(message):
     chat_id = message.chat.id
+    print("Got /status command!")
 
     # Можно добавить проверку ALLOWED_CHAT_IDS
     if chat_id not in ALLOWED_CHAT_IDS:
