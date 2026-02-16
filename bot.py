@@ -545,44 +545,35 @@ def is_reply_to_bot(message) -> bool:
             message.reply_to_message.from_user.id == bot.get_me().id
     )
 
+def safe_check_output(cmd_list: list, default: str = "N/A") -> str:
+    """Выполняет команду через subprocess.check_output. Если ошибка — возвращает default."""
+    try:
+        return subprocess.check_output(cmd_list, text=True).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return default
+
 def run_cmd(cmd):
     if cmd not in ALLOWED:
         return "Not allowed"
 
     # Собираем статус
     try:
-        # Температура
-        temp = subprocess.check_output(
-            ["vcgencmd", "measure_temp"], text=True
-        ).strip()
-
-        # Аптайм
-        uptime = subprocess.check_output(
-            ["uptime", "-p"], text=True
-        ).strip()
-
-        # Загрузка CPU (1,5,15 мин)
-        load = subprocess.check_output(
-            ["uptime"], text=True
-        ).strip().split("load average:")[-1].strip()
-
-        # Место на диске
-        disk = subprocess.check_output(
-            ["df", "-h", "/"], text=True
-        ).strip().split("\n")[1]  # берем только строку с корнем
-
-        # Оперативная память
-        mem = subprocess.check_output(
-            ["free", "-h"], text=True
-        ).strip().split("\n")[1]  # строка Mem
+        # Собираем статус безопасно
+        temp = safe_check_output(["vcgencmd", "measure_temp"])
+        uptime = safe_check_output(["uptime", "-p"])
+        load = safe_check_output(["uptime"]).split("load average:")[-1].strip()
+        disk_info = safe_check_output(["df", "-h", "/"]).split("\n")
+        disk = disk_info[1] if len(disk_info) > 1 else "N/A"
+        mem_info = safe_check_output(["free", "-h"]).split("\n")
+        mem = mem_info[1] if len(mem_info) > 1 else "N/A"
 
         status_msg = (
-            f"📊 TARS Pi STATUS:\n"
-            f"Temp: {temp}\n"
-            f"Uptime: {uptime}\n"
-            f"Load: {load}\n"
-            f"Disk: {disk}\n"
-            f"Memory: {mem}\n"
+            f"**TARS Pi STATUS**\n\n"
+            f"- CPU Temperature: {temp}\n"
+            f"- Uptime: {uptime}\n"
+            f"- CPU Load (1,5,15 min): {load}\n"
+            f"- Disk Usage: {disk}\n"
+            f"- Memory Usage: {mem}\n"
         )
         return status_msg
 
@@ -613,6 +604,17 @@ def shutdown(signum, frame):
     sys.exit(0)
 
 # --- HANDLERS ---
+
+@bot.message_handler(commands=["status"])
+def status_handler(message):
+    chat_id = message.chat.id
+
+    # Можно добавить проверку ALLOWED_CHAT_IDS
+    if chat_id not in ALLOWED_CHAT_IDS:
+        return
+
+    status_text = run_cmd("status")
+    bot.send_message(chat_id, status_text, parse_mode="Markdown")
 
 @bot.message_handler(content_types=["text", "photo"])
 def main_handler(message):
@@ -664,18 +666,6 @@ def main_handler(message):
         bot.reply_to(message, reply)
     except telebot.apihelper.ApiTelegramException as e:
         logging.error(f"Telegram API Error: {e}")
-
-@bot.message_handler(commands=["status"])
-def status_handler(message):
-    chat_id = message.chat.id
-    print("Got /status command!")
-
-    # Можно добавить проверку ALLOWED_CHAT_IDS
-    if chat_id not in ALLOWED_CHAT_IDS:
-        return
-
-    status_text = run_cmd("status")
-    bot.send_message(chat_id, status_text)
 
 if __name__ == "__main__":
     logging.info("TARS v1.1 Systems Online")
