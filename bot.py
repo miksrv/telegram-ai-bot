@@ -154,6 +154,9 @@ User profile interpretation rules (apply automatically to your responses):
 Conversation context (for understanding only, not to repeat):
 {context}
 
+Telegram user identity:
+{identity}
+
 User profile:
 {user_profile_summary}
 
@@ -292,7 +295,7 @@ cooldowns: Dict[int, float] = {} # Key: user_id (global cooldown per user)
 
 # --- CORE LOGIC ---
 class TARSBrain:
-    def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool) -> str:
+    def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool, identity: str) -> str:
         chat_ctx = memory.get_chat_context(chat_id)
         user_ctx = memory.get_user_context(user_id)
 
@@ -303,6 +306,14 @@ class TARSBrain:
         User context:
         {user_ctx}
         """
+
+        identity_block = (
+            f"- Telegram ID: {identity['id']}\n"
+            f"- First name: {identity['first_name']}\n"
+            f"- Last name: {identity['last_name']}\n"
+            f"- Username: @{identity['username']}\n"
+            f"- Language: {identity['language']}\n"
+        )
 
         profile = get_user_profile(user_id)
         profile_summary = (
@@ -318,7 +329,8 @@ class TARSBrain:
         system_content = GENERAL_PROMPT_JSON.format(
             context=memory.get_chat_context(chat_id),
             user_profile_summary=profile_summary,
-            message=user_message
+            message=user_message,
+            identity=identity_block
         )
 
         payload = {
@@ -547,6 +559,17 @@ def is_reply_to_bot(message) -> bool:
             message.reply_to_message.from_user.id == bot.get_me().id
     )
 
+def extract_telegram_identity(message):
+    user = message.from_user
+
+    return {
+        "id": user.id,
+        "first_name": user.first_name or "",
+        "last_name": user.last_name or "",
+        "username": user.username or "",
+        "language": user.language_code or ""
+    }
+
 def run_cmd(cmd):
     if cmd not in ALLOWED:
         return "Not allowed"
@@ -666,6 +689,7 @@ def main_handler(message):
     # Получаем текст и фото
     photo_url, caption = extract_photo_url(message)
     text_content = message.text or message.caption or ""
+    identity = extract_telegram_identity(message)
 
     has_trigger = is_calling_tars(text_content)
     is_reply = is_reply_to_bot(message)
@@ -694,7 +718,8 @@ def main_handler(message):
             chat_id,
             user_id,
             text_content[:MAX_INPUT_CHARS],
-            is_reply
+            is_reply,
+            identity
         )
 
     try:
