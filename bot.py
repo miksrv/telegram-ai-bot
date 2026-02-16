@@ -15,6 +15,7 @@ import sqlite3
 import time
 import signal
 import sys
+import subprocess
 
 from collections import deque
 from typing import Dict, Tuple, Optional, Set
@@ -53,6 +54,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+
+ALLOWED = {
+    "status": True  # помечаем ключом True — обработка внутри функции
+}
 
 def require_env(name: str) -> str:
     value = os.getenv(name)
@@ -540,6 +545,50 @@ def is_reply_to_bot(message) -> bool:
             message.reply_to_message.from_user.id == bot.get_me().id
     )
 
+def run_cmd(cmd):
+    if cmd not in ALLOWED:
+        return "Not allowed"
+
+    # Собираем статус
+    try:
+        # Температура
+        temp = subprocess.check_output(
+            ["vcgencmd", "measure_temp"], text=True
+        ).strip()
+
+        # Аптайм
+        uptime = subprocess.check_output(
+            ["uptime", "-p"], text=True
+        ).strip()
+
+        # Загрузка CPU (1,5,15 мин)
+        load = subprocess.check_output(
+            ["uptime"], text=True
+        ).strip().split("load average:")[-1].strip()
+
+        # Место на диске
+        disk = subprocess.check_output(
+            ["df", "-h", "/"], text=True
+        ).strip().split("\n")[1]  # берем только строку с корнем
+
+        # Оперативная память
+        mem = subprocess.check_output(
+            ["free", "-h"], text=True
+        ).strip().split("\n")[1]  # строка Mem
+
+        status_msg = (
+            f"📊 TARS Pi STATUS:\n"
+            f"Temp: {temp}\n"
+            f"Uptime: {uptime}\n"
+            f"Load: {load}\n"
+            f"Disk: {disk}\n"
+            f"Memory: {mem}\n"
+        )
+        return status_msg
+
+    except Exception as e:
+        return f"Ошибка при получении статуса: {e}"
+
 def extract_photo_url(message) -> Tuple[Optional[str], Optional[str]]:
     """Возвращает (url, caption) или (None, None)"""
     target_msg = message
@@ -615,6 +664,17 @@ def main_handler(message):
         bot.reply_to(message, reply)
     except telebot.apihelper.ApiTelegramException as e:
         logging.error(f"Telegram API Error: {e}")
+
+@bot.message_handler(commands=["status"])
+def status_handler(message):
+    chat_id = message.chat.id
+
+    # Можно добавить проверку ALLOWED_CHAT_IDS
+    if chat_id not in ALLOWED_CHAT_IDS:
+        return
+
+    status_text = run_cmd("status")
+    bot.send_message(chat_id, status_text)
 
 if __name__ == "__main__":
     logging.info("TARS v1.1 Systems Online")
