@@ -78,7 +78,8 @@ BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
 
 # Constants
-MODEL_TEXT = "llama-3.3-70b-versatile"
+# MODEL_TEXT = "llama-3.3-70b-versatile"
+MODEL_TEXT = "whisper-large-v3-turbo" # RATE LIMIT
 MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MAX_INPUT_CHARS = 1500
