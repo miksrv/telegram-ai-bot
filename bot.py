@@ -601,12 +601,12 @@ def run_cmd(cmd):
             mem_percent = "N/A"
 
         status_msg = (
-            "<strong>TARS Pi Status<strong>\n\n"
-            f"🔸 CPU Temperature: {temp}\n"
-            f"🔸 Uptime: {uptime}\n"
-            f"🔸 CPU Load (1,5,15 min): {load}\n"
-            f"🔸 Disk Usage: {disk_percent}\n"
-            f"🔸 Memory Usage: {mem_percent}\n"
+            "<strong>TARS Pi Status</strong>\n\n"
+            f"- CPU Temperature: {temp}\n"
+            f"- Uptime: {uptime}\n"
+            f"- CPU Load (1,5,15 min): {load}\n"
+            f"- Disk Usage: {disk_percent}\n"
+            f"- Memory Usage: {mem_percent}\n"
         )
         return status_msg
 
