@@ -601,7 +601,7 @@ def run_cmd(cmd):
             mem_percent = "N/A"
 
         status_msg = (
-            "*TARS Pi Status*\n\n"
+            "<strong>TARS Pi Status<strong>\n\n"
             f"🔸 CPU Temperature: {temp}\n"
             f"🔸 Uptime: {uptime}\n"
             f"🔸 CPU Load (1,5,15 min): {load}\n"
@@ -647,7 +647,7 @@ def status_handler(message):
         return
 
     status_text = run_cmd("status")
-    bot.send_message(chat_id, status_text, parse_mode="MarkdownV2")
+    bot.send_message(chat_id, status_text, parse_mode="HTML")
 
 @bot.message_handler(content_types=["text", "photo"])
 def main_handler(message):
