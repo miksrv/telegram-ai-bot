@@ -23,6 +23,7 @@ from typing import Dict, Tuple, Optional, Set
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from google import genai
 import telebot
 
 load_dotenv()
@@ -76,9 +77,13 @@ def parse_chat_ids(raw: str) -> Set[int]:
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
+GEMINI_API_KEY = require_env("GEMINI_API_KEY")
 
 # Constants
-MODEL_TEXT = "llama-3.3-70b-versatile"
+LLM_PROVIDER = "gemini" # gemini or groq
+
+MODEL_GEMINI = "gemini-3-flash-preview"
+MODEL_GROQ = "llama-3.3-70b-versatile"
 MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MAX_INPUT_CHARS = 1500
@@ -96,6 +101,10 @@ retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504]
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+
+gemini_client = None
+if LLM_PROVIDER == "gemini":
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 GENERAL_PROMPT_JSON = """
 You are TARS, an autonomous robot from the movie “Interstellar”.
@@ -293,6 +302,48 @@ class MemoryManager:
 memory = MemoryManager()
 cooldowns: Dict[int, float] = {} # Key: user_id (global cooldown per user)
 
+def generate_text(system_prompt: str) -> str:
+    """
+    Унифицированный вызов LLM
+    Возвращает raw текст ответа модели
+    """
+
+    # ---------- GROQ ----------
+    if LLM_PROVIDER == "groq":
+        payload = {
+            "model": MODEL_GROQ,
+            "messages": [{"role": "system", "content": system_prompt}],
+            "temperature": 0.8,
+            "max_tokens": 800,
+            "top_p": 0.95,
+        }
+
+        response = session.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json=payload,
+            timeout=8
+        )
+        response.raise_for_status()
+
+        return response.json()["choices"][0]["message"]["content"].strip()
+
+    # ---------- GEMINI ----------
+    elif LLM_PROVIDER == "gemini":
+        response = gemini_client.models.generate_content(
+            model=MODEL_GEMINI,
+            contents=system_prompt,
+            config={
+                "temperature": 0.8,
+                "response_mime_type": "application/json"
+            }
+        )
+        return response.text.strip()
+
+    else:
+        raise RuntimeError("Unknown LLM provider")
+
+
 # --- CORE LOGIC ---
 class TARSBrain:
     def think(self, chat_id: int, user_id: int, user_message: str, is_reply: bool, identity: str) -> str:
@@ -333,23 +384,8 @@ class TARSBrain:
             identity=identity_block
         )
 
-        payload = {
-            "model": MODEL_TEXT,
-            "messages": [{"role": "system", "content": system_content}],
-            "temperature": 0.8,
-            "max_tokens": 800,
-            "top_p": 0.95,
-        }
-
         try:
-            response = session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                json=payload,
-                timeout=5
-            )
-            response.raise_for_status()
-            raw_content = response.json()["choices"][0]["message"]["content"].strip()
+            raw_content = generate_text(system_content)
 
             # --- Парсим JSON ---
             try:
