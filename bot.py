@@ -545,35 +545,68 @@ def is_reply_to_bot(message) -> bool:
             message.reply_to_message.from_user.id == bot.get_me().id
     )
 
-def safe_check_output(cmd_list: list, default: str = "N/A") -> str:
-    """Выполняет команду через subprocess.check_output. Если ошибка — возвращает default."""
-    try:
-        return subprocess.check_output(cmd_list, text=True).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return default
-
 def run_cmd(cmd):
     if cmd not in ALLOWED:
         return "Not allowed"
 
-    # Собираем статус
     try:
-        # Собираем статус безопасно
-        temp = safe_check_output(["vcgencmd", "measure_temp"])
-        uptime = safe_check_output(["uptime", "-p"])
-        load = safe_check_output(["uptime"]).split("load average:")[-1].strip()
-        disk_info = safe_check_output(["df", "-h", "/"]).split("\n")
-        disk = disk_info[1] if len(disk_info) > 1 else "N/A"
-        mem_info = safe_check_output(["free", "-h"]).split("\n")
-        mem = mem_info[1] if len(mem_info) > 1 else "N/A"
+        # --- CPU Temperature ---
+        temp_out = subprocess.check_output(
+            ["vcgencmd", "measure_temp"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if temp_out.startswith("temp="):
+            temp = temp_out.replace("temp=", "")
+        else:
+            temp = "N/A"
+
+        # --- Uptime ---
+        uptime_out = subprocess.check_output(
+            ["uptime", "-p"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        uptime = uptime_out.replace("up ", "") if uptime_out else "N/A"
+
+        # --- CPU Load ---
+        load_out = subprocess.check_output(
+            ["uptime"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if "load average:" in load_out:
+            load = load_out.split("load average:")[-1].strip()
+        else:
+            load = "N/A"
+
+        # --- Disk Usage for root / ---
+        disk_out = subprocess.check_output(
+            ["df", "-h", "/"], text=True, stderr=subprocess.DEVNULL
+        ).strip().split("\n")
+        if len(disk_out) >= 2:
+            disk_percent = disk_out[1].split()[4]  # берем только 5-й столбец %
+        else:
+            disk_percent = "N/A"
+
+        # --- Memory Usage ---
+        mem_out = subprocess.check_output(
+            ["free", "-h"], text=True, stderr=subprocess.DEVNULL
+        ).strip().split("\n")
+        if len(mem_out) >= 2:
+            mem_values = mem_out[1].split()
+            used_mem = mem_values[2]
+            total_mem = mem_values[1]
+            try:
+                # Попробуем вычислить процент
+                mem_percent = str(int(float(used_mem[:-1].replace("Gi","").replace("Mi","")) /
+                                      float(total_mem[:-1].replace("Gi","").replace("Mi","")) * 100)) + "%"
+            except Exception:
+                mem_percent = f"{used_mem}/{total_mem}"
+        else:
+            mem_percent = "N/A"
 
         status_msg = (
-            f"**TARS Pi STATUS**\n\n"
+            "**TARS Pi Status**\n\n"
             f"- CPU Temperature: {temp}\n"
             f"- Uptime: {uptime}\n"
             f"- CPU Load (1,5,15 min): {load}\n"
-            f"- Disk Usage: {disk}\n"
-            f"- Memory Usage: {mem}\n"
+            f"- Disk Usage: {disk_percent}\n"
+            f"- Memory Usage: {mem_percent}\n"
         )
         return status_msg
 
@@ -614,7 +647,7 @@ def status_handler(message):
         return
 
     status_text = run_cmd("status")
-    bot.send_message(chat_id, status_text, parse_mode="Markdown")
+    bot.send_message(chat_id, status_text, parse_mode="HTML")
 
 @bot.message_handler(content_types=["text", "photo"])
 def main_handler(message):
