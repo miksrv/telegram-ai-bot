@@ -29,7 +29,7 @@ load_dotenv()
 
 # Подключение к базе
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "tars_user_profiles.db")
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
 cursor = conn.cursor()
 
 # Таблица для профиля пользователя
