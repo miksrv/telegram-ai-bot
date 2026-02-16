@@ -6,7 +6,6 @@ Secure, minimalist, multichat Telegram bot
 
 import os
 from dotenv import load_dotenv
-import time
 import re
 import json
 import random
@@ -18,7 +17,7 @@ import signal
 import sys
 
 from collections import deque
-from typing import Deque, Dict, Tuple, Optional, Set
+from typing import Dict, Tuple, Optional, Set
 
 import requests
 from requests.adapters import HTTPAdapter
