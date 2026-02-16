@@ -14,6 +14,8 @@ import logging
 import base64
 import sqlite3
 import time
+import signal
+import sys
 
 from collections import deque
 from typing import Deque, Dict, Tuple, Optional, Set
@@ -608,6 +610,11 @@ def extract_photo_url(message) -> Tuple[Optional[str], Optional[str]]:
     caption = message.text or message.caption or target_msg.caption or ""
     return url, caption
 
+def shutdown(signum, frame):
+    logging.info("Shutting down TARS...")
+    conn.close()
+    sys.exit(0)
+
 # --- HANDLERS ---
 
 @bot.message_handler(content_types=["text", "photo"])
@@ -671,3 +678,6 @@ if __name__ == "__main__":
         except Exception as e:
             logging.critical(f"Critical Crash: {e}")
             time.sleep(10)
+
+signal.signal(signal.SIGINT, shutdown)
+signal.signal(signal.SIGTERM, shutdown)
