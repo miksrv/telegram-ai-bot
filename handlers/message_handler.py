@@ -53,7 +53,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             return
 
     # --- UNAUTHORIZED CHAT LOGIC ---
-    # Пропускаем админа в любой чат
+    # Allow if it has trigger or is a reply, but log the attempt
     if chat_id not in allowed_chat_ids and message.chat.type != "private":
         if has_trigger or is_reply:
             bot.reply_to(message, standard_reply)
@@ -69,7 +69,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     identity = extract_telegram_identity(message)
 
     # Ignore message if it doesn't call TARS and is not a reply
-    if not (has_trigger or is_reply):
+    if message.chat.type != "private" and not (has_trigger or is_reply):
         return
 
     # --- Cooldown check ---
