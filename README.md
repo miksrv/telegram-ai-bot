@@ -37,7 +37,7 @@ A Python-based Telegram bot powered by AI. This project uses pip for dependency 
      ```
 4. **Run the bot:**
    ```sh
-   python bot.py
+   python main.py
    ```
    The database file (`data/tars_user_profiles.db`) will be created automatically on first run if it does not exist.
 

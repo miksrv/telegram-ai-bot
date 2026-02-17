@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./bot.py:/app/bot.py:ro
+      - ./main.py:/app/main.py:ro
       - ./data:/app/data
-    command: python /app/bot.py
+    command: python /app/main.py
 
