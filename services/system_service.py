@@ -67,4 +67,4 @@ def get_system_status() -> str:
 
     except Exception as e:
         logging.error(f"System status error: {e}")
-        return f"Failed to retrieve system status: {e}"
+        return f"Ошибка получения статуса системы. Данные временно не доступны."

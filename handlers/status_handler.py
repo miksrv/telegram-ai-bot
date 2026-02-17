@@ -22,6 +22,6 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # Send status message as HTML
     try:
-        bot.send_message(chat_id, get_system_status, parse_mode="HTML")
+        bot.send_message(chat_id, get_system_status(), parse_mode="HTML")
     except Exception as e:
         logging.error(f"Failed to send status message: {e}")
