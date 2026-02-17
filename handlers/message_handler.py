@@ -15,9 +15,10 @@ from core.memory import memory
 from utils.photo import extract_photo_url
 from utils.identity import extract_telegram_identity
 from utils.triggers import is_calling_tars, is_reply_to_bot
+from config.settings import ADMIN_IDS
 
 # Global cooldown dictionary imported from cooldown module
-from core.cooldown import cooldowns, USER_COOLDOWN_SECONDS
+from core.cooldown import cooldowns
 
 
 def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -28,8 +29,35 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # Ignore messages from unauthorized chats
-    if chat_id not in allowed_chat_ids:
+    # --- Extract text ---
+    text_content = message.text or message.caption or ""
+
+    # --- Check triggers and replies ---
+    has_trigger = is_calling_tars(text_content)
+    is_reply = is_reply_to_bot(bot, message)
+
+    standard_reply = (
+        "Я не отвечаю в личных сообщениях 🙂\n"
+        "Присоединяйтесь к астрономическому чату "
+        "@astronom_chat и пообщаемся там!"
+    )
+
+    # --- PRIVATE CHAT LOGIC ---
+    if message.chat.type == "private":
+        if user_id in ADMIN_IDS:
+            # Admin can interact in private chat
+            pass
+        else:
+            bot.reply_to(message, standard_reply)
+            logging.info(f"Blocked PRIVATE | user={user_id}")
+            return
+
+    # --- UNAUTHORIZED CHAT LOGIC ---
+    # Пропускаем админа в любой чат
+    if chat_id not in allowed_chat_ids and message.chat.type != "private":
+        if has_trigger or is_reply:
+            bot.reply_to(message, standard_reply)
+            logging.info(f"Blocked UNAUTHORIZED | user={user_id} chat={chat_id}")
         return
 
     # Periodic cleanup of memory (5% chance per message)
@@ -38,12 +66,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # --- Extract text and photo ---
     photo_url, caption = extract_photo_url(bot, message)
-    text_content = message.text or message.caption or ""
     identity = extract_telegram_identity(message)
-
-    # --- Check triggers and replies ---
-    has_trigger = is_calling_tars(text_content)
-    is_reply = is_reply_to_bot(bot, message)
 
     # Ignore message if it doesn't call TARS and is not a reply
     if not (has_trigger or is_reply):
