@@ -71,7 +71,7 @@ class TARSBrain:
         )
 
         # Fetch profile from DB
-        profile = db_get_user_profile(user_id)
+        profile = db_get_user_profile(user_id, identity)
 
         profile_summary = (
             f"- Offtopic tendency: {profile['avg_offtopic']:.2f}\n"
