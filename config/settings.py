@@ -56,6 +56,15 @@ MAX_INPUT_CHARS = 1500
 MAX_CONTEXT_MESSAGES = 10
 MEMORY_LIMIT = 50
 MEMORY_TTL_SECONDS = 3600 * 24
+
+# --------------------------------------------
+# Additional rate limit parameters
+# (can be moved to settings later)
+# --------------------------------------------
+
+RATE_LIMIT_COUNT = 3
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_PENALTY = 120
 USER_COOLDOWN_SECONDS = 5
 
 # --------------------------------------------------
