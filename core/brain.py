@@ -107,7 +107,7 @@ class TARSBrain:
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=8,
+                timeout=(5, 60),
             )
 
             response.raise_for_status()
@@ -197,7 +197,7 @@ class TARSBrain:
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=15,
+                timeout=(5, 120),
             )
 
             if response.status_code != 200:
