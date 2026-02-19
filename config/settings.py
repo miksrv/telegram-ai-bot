@@ -63,10 +63,10 @@ MEMORY_TTL_SECONDS = 3600 * 24
 # (can be moved to settings later)
 # --------------------------------------------
 
-RATE_LIMIT_COUNT = 3
+RATE_LIMIT_COUNT = 2
 RATE_LIMIT_WINDOW = 60
-RATE_LIMIT_PENALTY = 120
-USER_COOLDOWN_SECONDS = 5
+RATE_LIMIT_PENALTY = 180
+USER_COOLDOWN_SECONDS = 10
 
 # --------------------------------------------------
 # Triggers
