@@ -2,6 +2,7 @@ import json
 import base64
 import logging
 from typing import Optional
+import time
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -34,6 +35,34 @@ retries = Retry(
 )
 
 session.mount("https://", HTTPAdapter(max_retries=retries))
+
+# ------------------------------------------------
+# Helper function for API calls with retry logic
+# ------------------------------------------------
+
+def post_with_retry(url, headers, payload, retries=3):
+    for attempt in range(retries):
+        try:
+            response = session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=(5, 60),
+            )
+
+            response.raise_for_status()
+            return response
+
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+
+            logging.warning(f"API retry {attempt+1}/{retries}: {e}")
+
+            if attempt == retries - 1:
+                raise
+
+            time.sleep(2 ** attempt)  # exponential backoff
 
 
 # ==================================================
@@ -100,14 +129,12 @@ class TARSBrain:
         }
 
         try:
-            response = session.post(
+            response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
-                timeout=(5, 60),
             )
 
             response.raise_for_status()
@@ -190,14 +217,12 @@ class TARSBrain:
                 "top_p": 0.9,
             }
 
-            response = session.post(
+            response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
-                timeout=(5, 120),
             )
 
             if response.status_code != 200:
@@ -209,7 +234,6 @@ class TARSBrain:
         except Exception as e:
             logging.error(f"Vision error: {e}")
             return "Ошибка визуального модуля"
-
 
 # Singleton brain instance
 brain = TARSBrain()
