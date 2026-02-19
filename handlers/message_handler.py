@@ -74,7 +74,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # --- Cooldown check ---
     if not cooldowns.allowed(user_id):
-        bot.reply_to(message, "Пожалуйста, подождите немного перед следующим сообщением.")
+        bot.reply_to(message, "Вы задаете слишком много вопросов. Пожалуйста, подождите немного перед следующим сообщением.")
         return
 
     # --- Logging ---
