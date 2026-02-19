@@ -83,6 +83,11 @@ class TARSBrain:
         - Update memory + profile
         """
 
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+
         # Prevent prompt overflow
         user_message = user_message[:MAX_INPUT_CHARS]
 
@@ -131,10 +136,8 @@ class TARSBrain:
         try:
             response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
+                headers,
+                payload,
             )
 
             response.raise_for_status()
@@ -184,6 +187,11 @@ class TARSBrain:
         Download image and send to vision model
         """
 
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+
         try:
             img = session.get(image_url, timeout=10)
             img.raise_for_status()
@@ -219,10 +227,8 @@ class TARSBrain:
 
             response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
+                headers,
+                payload,
             )
 
             if response.status_code != 200:
