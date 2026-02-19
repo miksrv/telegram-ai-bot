@@ -25,6 +25,11 @@ from database.profile_repo import db_get_user_profile, db_update_user_profile, d
 # Shared HTTP session (connection reuse)
 # --------------------------------------------------
 
+API_HEADERS = {
+    "Authorization": f"Bearer {GROQ_API_KEY}",
+    "Content-Type": "application/json",
+}
+
 session = requests.Session()
 
 # Configure retry strategy for transient network errors
@@ -83,11 +88,6 @@ class TARSBrain:
         - Update memory + profile
         """
 
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
-
         # Prevent prompt overflow
         user_message = user_message[:MAX_INPUT_CHARS]
 
@@ -136,11 +136,9 @@ class TARSBrain:
         try:
             response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers,
+                API_HEADERS,
                 payload,
             )
-
-            response.raise_for_status()
 
             raw = response.json()["choices"][0]["message"]["content"].strip()
 
@@ -176,7 +174,7 @@ class TARSBrain:
 
         except Exception as e:
             logging.error(f"Text gen error: {e}")
-            return "Сбой логического модуля"
+            return "Сбой логического модуля, пожалуйста, попробуйте снова"
 
 
     # --------------------------------------------------
@@ -186,11 +184,6 @@ class TARSBrain:
         """
         Download image and send to vision model
         """
-
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
 
         try:
             img = session.get(image_url, timeout=10)
@@ -227,7 +220,7 @@ class TARSBrain:
 
             response = post_with_retry(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers,
+                API_HEADERS,
                 payload,
             )
 
