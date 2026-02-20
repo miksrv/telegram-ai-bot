@@ -1,7 +1,6 @@
 import json
 import base64
 import logging
-from typing import Optional
 import time
 
 import requests
@@ -79,29 +78,115 @@ class TARSBrain:
     # --------------------------------------------------
     # TEXT THINKING
     # --------------------------------------------------
-    def think(
-            self,
-            chat_id,
-            user_id,
-            user_message,
-            identity: dict
-    ) -> str:
-        """
-        Main reasoning pipeline:
-        - Build context
-        - Call LLM
-        - Parse JSON
-        - Update memory + profile
-        """
+    def think(self, chat_id, user_id, user_message, identity):
 
-        # Prevent prompt overflow
         user_message = user_message[:MAX_INPUT_CHARS]
 
-        # Retrieve contextual memory
+        chat_ctx, user_ctx, identity_block, profile_summary = \
+            self._build_user_context(chat_id, user_id, identity)
+
+        system_content = build_general_prompt(
+            context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
+            identity=identity_block,
+            profile_summary=profile_summary,
+            message=user_message,
+        )
+
+        try:
+            raw = self._call_llm(
+                MODEL_TEXT,
+                [{"role": "system", "content": system_content}],
+                temperature=0.8,
+                max_tokens=800,
+                top_p=0.95
+            )
+
+            data = self._parse_json_safe(raw)
+            if not data:
+                return "Ошибка ответа логического модуля"
+
+            reply = data.get("reply", "")
+            profile_update = data.get("profile_update", {})
+            notes = data.get("notes")
+
+            memory.add_chat_memory(chat_id, user_id, user_message, reply)
+            memory.add_user_memory(user_id, user_message, reply)
+
+            if profile_update:
+                db_update_user_profile(user_id, profile_update)
+
+            if notes:
+                db_update_user_notes(user_id, notes)
+
+            return reply
+
+        except Exception as e:
+            logging.error(f"Text gen error: {e}")
+            return "Сбой логического модуля. Пожалуйста, попробуйте позже."
+
+
+    # --------------------------------------------------
+    # IMAGE ANALYSIS
+    # --------------------------------------------------
+    def analyze_image(self, chat_id, user_id, image_url, caption, identity):
+
+        try:
+            chat_ctx, user_ctx, identity_block, profile_summary = \
+                self._build_user_context(chat_id, user_id, identity)
+
+            vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
+
+            system_content = build_general_prompt(
+                context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
+                identity=identity_block,
+                profile_summary=profile_summary,
+                message=vision_message,
+            ) + "\n\n" + get_vision_prompt()
+
+            img = session.get(image_url, timeout=15)
+            img.raise_for_status()
+
+            image_b64 = base64.b64encode(img.content).decode()
+
+            messages = [
+                {"role": "system", "content": system_content},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": vision_message},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}
+                        },
+                    ],
+                },
+            ]
+
+            reply = self._call_llm(
+                MODEL_VISION,
+                messages,
+                temperature=0.9,
+                max_tokens=400,
+                top_p=0.9
+            )
+
+            memory.add_chat_memory(chat_id, user_id, vision_message, reply)
+            memory.add_user_memory(user_id, vision_message, reply)
+
+            return reply
+
+        except Exception as e:
+            logging.error(f"Vision error: {e}")
+            return "Ошибка визуального модуля"
+
+
+    # --------------------------------------------------
+    # Context building (for both text and vision)
+    # --------------------------------------------------
+    def _build_user_context(self, chat_id, user_id, identity):
         chat_ctx = memory.get_chat_context(chat_id)
         user_ctx = memory.get_user_context(user_id)
 
-        # Safely construct identity block
         identity_block = (
             f"- Telegram ID: {identity.get('id')}\n"
             f"- First name: {identity.get('first_name')}\n"
@@ -110,7 +195,6 @@ class TARSBrain:
             f"- Language: {identity.get('language')}\n"
         )
 
-        # Fetch profile from DB
         profile = db_get_user_profile(user_id, identity)
 
         profile_summary = (
@@ -123,159 +207,44 @@ class TARSBrain:
             f"- Notes: {profile['notes'] or 'none'}"
         )
 
-        # Build centralized system prompt
-        system_content = build_general_prompt(
-            context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-            identity=identity_block,
-            profile_summary=profile_summary,
-            message=user_message,
-        )
+        return chat_ctx, user_ctx, identity_block, profile_summary
 
+
+    # --------------------------------------------------
+    # LLM call abstraction (for both text and vision)
+    # --------------------------------------------------
+    def _call_llm(self, model, messages, temperature, max_tokens, top_p):
         payload = {
-            "model": MODEL_TEXT,
-            "messages": [{"role": "system", "content": system_content}],
-            "temperature": 0.8,
-            "max_tokens": 800,
-            "top_p": 0.95,
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
         }
 
-        try:
-            response = post_with_retry(
-                "https://api.groq.com/openai/v1/chat/completions",
-                API_HEADERS,
-                payload,
-            )
+        response = post_with_retry(
+            "https://api.groq.com/openai/v1/chat/completions",
+            API_HEADERS,
+            payload,
+        )
 
-            raw = response.json()["choices"][0]["message"]["content"].strip()
-
-            # ---------------- JSON SAFE PARSING ----------------
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # Attempt to salvage JSON if model wrapped text
-                start = raw.find("{")
-                end = raw.rfind("}") + 1
-                if start != -1 and end != -1:
-                    data = json.loads(raw[start:end])
-                else:
-                    logging.error(f"Unrecoverable JSON: {raw}")
-                    return "Ошибка логического модуля"
-
-            reply = data.get("reply", "Ошибка: пустой ответ")
-            profile_update = data.get("profile_update", {})
-            notes = data.get("notes")
-
-            # ---- Memory update
-            memory.add_chat_memory(chat_id, user_id, user_message, reply)
-            memory.add_user_memory(user_id, user_message, reply)
-
-            # ---- Profile update
-            if profile_update:
-                db_update_user_profile(user_id, profile_update)
-
-            if notes:
-                db_update_user_notes(user_id, notes)
-
-            return reply
-
-        except Exception as e:
-            logging.error(f"Text gen error: {e}")
-            return "Сбой логического модуля, пожалуйста, попробуйте снова"
+        return response.json()["choices"][0]["message"]["content"].strip()
 
 
     # --------------------------------------------------
-    # IMAGE ANALYSIS
+    # Robust JSON parsing (handles common model formatting issues)
     # --------------------------------------------------
-    def analyze_image(
-            self,
-            chat_id: int,
-            user_id: int,
-            image_url: str,
-            caption: Optional[str],
-            identity: dict
-    ) -> str:
-
+    def _parse_json_safe(self, raw):
         try:
-            # ---------- Context ----------
-            chat_ctx = memory.get_chat_context(chat_id)
-            user_ctx = memory.get_user_context(user_id)
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start != -1 and end != -1:
+                return json.loads(raw[start:end])
+            logging.error(f"Unrecoverable JSON: {raw}")
+            return None
 
-            identity_block = (
-                f"- Telegram ID: {identity.get('id')}\n"
-                f"- First name: {identity.get('first_name')}\n"
-                f"- Last name: {identity.get('last_name')}\n"
-                f"- Username: @{identity.get('username')}\n"
-                f"- Language: {identity.get('language')}\n"
-            )
-
-            profile = db_get_user_profile(user_id, identity)
-
-            profile_summary = (
-                f"- Offtopic tendency: {profile['avg_offtopic']:.2f}\n"
-                f"- Provocation tendency: {profile['avg_provocation']:.2f}\n"
-                f"- Spam tendency: {profile['avg_spam']:.2f}\n"
-                f"- Rudeness tendency: {profile['avg_rudeness']:.2f}\n"
-                f"- Verbosity: {profile['avg_verbosity']:.2f}\n"
-                f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}\n"
-                f"- Notes: {profile['notes'] or 'none'}"
-            )
-
-            vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
-
-            system_content = get_vision_prompt(
-                context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-                identity=identity_block,
-                profile_summary=profile_summary,
-            )
-
-            # ---------- Download image ----------
-            img = session.get(image_url, timeout=15)
-            img.raise_for_status()
-
-            image_b64 = base64.b64encode(img.content).decode()
-
-            # ---------- Compose messages ----------
-            messages = [
-                {"role": "system", "content": system_content},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": vision_message},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
-                            }
-                        },
-                    ],
-                },
-            ]
-
-            payload = {
-                "model": MODEL_VISION,
-                "messages": messages,
-                "temperature": 0.9,
-                "max_tokens": 400,
-                "top_p": 0.9,
-            }
-
-            response = post_with_retry(
-                "https://api.groq.com/openai/v1/chat/completions",
-                API_HEADERS,
-                payload,
-            )
-
-            reply = response.json()["choices"][0]["message"]["content"].strip()
-
-            # ---------- Memory integration ----------
-            memory.add_chat_memory(chat_id, user_id, vision_message, reply)
-            memory.add_user_memory(user_id, vision_message, reply)
-
-            return reply
-
-        except Exception as e:
-            logging.error(f"Vision error: {e}")
-            return "Ошибка визуального модуля"
 
 # Singleton brain instance
 brain = TARSBrain()
