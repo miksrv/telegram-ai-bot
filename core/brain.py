@@ -163,7 +163,7 @@ class TARSBrain:
                 },
             ]
 
-            reply = self._call_llm(
+            raw = self._call_llm(
                 MODEL_VISION,
                 messages,
                 temperature=0.9,
@@ -171,8 +171,22 @@ class TARSBrain:
                 top_p=0.9
             )
 
-            memory.add_chat_memory(chat_id, user_id, vision_message, reply)
-            memory.add_user_memory(user_id, vision_message, reply)
+            data = self._parse_json_safe(raw)
+            if not data:
+                return "Ошибка ответа логического модуля"
+
+            reply = data.get("reply", "")
+            profile_update = data.get("profile_update", {})
+            notes = data.get("notes")
+
+            memory.add_chat_memory(chat_id, user_id, caption, reply)
+            memory.add_user_memory(user_id, caption, reply)
+
+            if profile_update:
+                db_update_user_profile(user_id, profile_update)
+
+            if notes:
+                db_update_user_notes(user_id, notes)
 
             return reply
 
