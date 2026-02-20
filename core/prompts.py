@@ -124,6 +124,15 @@ Task:
 Analyze the provided image, taking the caption into account if present.
 Produce an observational response with technical clarity and natural flow.
 End organically without summary or closing statement.
+
+Conversation context (for understanding only, not to repeat):
+{context}
+
+Telegram user identity:
+{identity}
+
+User profile:
+{user_profile_summary}
 """
 
 
@@ -149,9 +158,17 @@ def build_general_prompt(
     )
 
 
-def get_vision_prompt() -> str:
+def get_vision_prompt(
+        context: str,
+        identity: str,
+        profile_summary: str,
+) -> str:
     """
     Returns the image analysis prompt
     (this function is for future use — for example, to select a mode)
     """
-    return VISION_PROMPT
+    return VISION_PROMPT.format(
+        context=context,
+        identity=identity,
+        user_profile_summary=profile_summary,
+    )
