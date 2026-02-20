@@ -16,6 +16,7 @@ from config.settings import (
 
 from core.memory import memory
 from core.prompts import build_general_prompt, get_vision_prompt
+from core.personality_engine import PersonalityEngine
 
 from database.profile_repo import db_get_user_profile, db_update_user_profile, db_update_user_notes
 
@@ -197,14 +198,12 @@ class TARSBrain:
 
         profile = db_get_user_profile(user_id, identity)
 
+        dynamic_rules = PersonalityEngine.build_prompt_rules(profile)
+
         profile_summary = (
-            f"- Offtopic tendency: {profile['avg_offtopic']:.2f}\n"
-            f"- Provocation tendency: {profile['avg_provocation']:.2f}\n"
-            f"- Spam tendency: {profile['avg_spam']:.2f}\n"
-            f"- Rudeness tendency: {profile['avg_rudeness']:.2f}\n"
-            f"- Verbosity: {profile['avg_verbosity']:.2f}\n"
-            f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}\n"
-            f"- Notes: {profile['notes'] or 'none'}"
+            dynamic_rules + "\n\n"
+                f"Interests: {', '.join(profile['interests']) or 'none'}\n"
+                f"Notes: {profile['notes'] or 'none'}"
         )
 
         return chat_ctx, user_ctx, identity_block, profile_summary
