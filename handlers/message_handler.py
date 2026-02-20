@@ -89,7 +89,13 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # --- Generate reply ---
     if photo_url and (has_trigger or is_reply):
-        reply = brain.analyze_image(photo_url, caption)
+        reply = brain.analyze_image(
+            chat_id=chat_id,
+            user_id=user_id,
+            image_url=photo_url,
+            caption=caption,
+            identity=identity
+        )
     else:
         reply = brain.think(
             chat_id=chat_id,
