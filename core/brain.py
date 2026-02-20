@@ -79,7 +79,13 @@ class TARSBrain:
     # --------------------------------------------------
     # TEXT THINKING
     # --------------------------------------------------
-    def think(self, chat_id, user_id, user_message, identity: dict) -> str:
+    def think(
+            self,
+            chat_id,
+            user_id,
+            user_message,
+            identity: dict
+    ) -> str:
         """
         Main reasoning pipeline:
         - Build context
@@ -180,26 +186,61 @@ class TARSBrain:
     # --------------------------------------------------
     # IMAGE ANALYSIS
     # --------------------------------------------------
-    def analyze_image(self, image_url: str, caption: Optional[str]) -> str:
-        """
-        Download image and send to vision model
-        """
+    def analyze_image(
+            self,
+            chat_id: int,
+            user_id: int,
+            image_url: str,
+            caption: Optional[str],
+            identity: dict
+    ) -> str:
 
         try:
-            img = session.get(image_url, timeout=10)
+            # ---------- Context ----------
+            chat_ctx = memory.get_chat_context(chat_id)
+            user_ctx = memory.get_user_context(user_id)
+
+            identity_block = (
+                f"- Telegram ID: {identity.get('id')}\n"
+                f"- First name: {identity.get('first_name')}\n"
+                f"- Last name: {identity.get('last_name')}\n"
+                f"- Username: @{identity.get('username')}\n"
+                f"- Language: {identity.get('language')}\n"
+            )
+
+            profile = db_get_user_profile(user_id, identity)
+
+            profile_summary = (
+                f"- Offtopic tendency: {profile['avg_offtopic']:.2f}\n"
+                f"- Provocation tendency: {profile['avg_provocation']:.2f}\n"
+                f"- Spam tendency: {profile['avg_spam']:.2f}\n"
+                f"- Rudeness tendency: {profile['avg_rudeness']:.2f}\n"
+                f"- Verbosity: {profile['avg_verbosity']:.2f}\n"
+                f"- Interests: {', '.join(profile['interests']) if profile['interests'] else 'none'}\n"
+                f"- Notes: {profile['notes'] or 'none'}"
+            )
+
+            vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
+
+            system_content = get_vision_prompt(
+                context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
+                identity=identity_block,
+                profile_summary=profile_summary,
+            )
+
+            # ---------- Download image ----------
+            img = session.get(image_url, timeout=15)
             img.raise_for_status()
 
             image_b64 = base64.b64encode(img.content).decode()
 
+            # ---------- Compose messages ----------
             messages = [
-                {
-                    "role": "system",
-                    "content": get_vision_prompt(),  # call builder
-                },
+                {"role": "system", "content": system_content},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": caption or "Analyze image"},
+                        {"type": "text", "text": vision_message},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -214,7 +255,7 @@ class TARSBrain:
                 "model": MODEL_VISION,
                 "messages": messages,
                 "temperature": 0.9,
-                "max_tokens": 300,
+                "max_tokens": 400,
                 "top_p": 0.9,
             }
 
@@ -224,11 +265,13 @@ class TARSBrain:
                 payload,
             )
 
-            if response.status_code != 200:
-                logging.error(response.text)
-                return "Оптические сенсоры перегружены"
+            reply = response.json()["choices"][0]["message"]["content"].strip()
 
-            return response.json()["choices"][0]["message"]["content"].strip()
+            # ---------- Memory integration ----------
+            memory.add_chat_memory(chat_id, user_id, vision_message, reply)
+            memory.add_user_memory(user_id, vision_message, reply)
+
+            return reply
 
         except Exception as e:
             logging.error(f"Vision error: {e}")
