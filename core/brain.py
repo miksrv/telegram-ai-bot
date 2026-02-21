@@ -94,30 +94,19 @@ class TARSBrain:
         )
 
         try:
-            raw = self._call_llm(
+            reply, err = self._process_llm_response(
                 MODEL_TEXT,
                 [{"role": "system", "content": system_content}],
                 temperature=0.8,
                 max_tokens=800,
-                top_p=0.95
+                top_p=0.95,
+                chat_id=chat_id,
+                user_id=user_id,
+                user_input=user_message,
             )
 
-            data = self._parse_json_safe(raw)
-            if not data:
-                return "Ошибка ответа логического модуля"
-
-            reply = data.get("reply", "")
-            profile_update = data.get("profile_update", {})
-            notes = data.get("notes")
-
-            memory.add_chat_memory(chat_id, user_id, user_message, reply)
-            memory.add_user_memory(user_id, user_message, reply)
-
-            if profile_update:
-                db_update_user_profile(user_id, profile_update)
-
-            if notes:
-                db_update_user_notes(user_id, notes)
+            if err:
+                return err
 
             return reply
 
@@ -163,36 +152,69 @@ class TARSBrain:
                 },
             ]
 
-            raw = self._call_llm(
+            reply, err = self._process_llm_response(
                 MODEL_VISION,
                 messages,
                 temperature=0.9,
                 max_tokens=400,
-                top_p=0.9
+                top_p=0.9,
+                chat_id=chat_id,
+                user_id=user_id,
+                user_input=caption,
             )
 
-            data = self._parse_json_safe(raw)
-            if not data:
-                return "Ошибка ответа логического модуля"
-
-            reply = data.get("reply", "")
-            profile_update = data.get("profile_update", {})
-            notes = data.get("notes")
-
-            memory.add_chat_memory(chat_id, user_id, caption, reply)
-            memory.add_user_memory(user_id, caption, reply)
-
-            if profile_update:
-                db_update_user_profile(user_id, profile_update)
-
-            if notes:
-                db_update_user_notes(user_id, notes)
+            if err:
+                return err
 
             return reply
 
         except Exception as e:
             logging.error(f"Vision error: {e}")
             return "Ошибка визуального модуля"
+
+
+    # --------------------------------------------------
+    # Core LLM response processing (shared logic for text and vision)
+    # --------------------------------------------------
+    def _process_llm_response(
+            self,
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            top_p,
+            chat_id,
+            user_id,
+            user_input,
+    ):
+        raw = self._call_llm(
+            model,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+        )
+
+        data = self._parse_json_safe(raw)
+        if not data:
+            return None, "Ошибка ответа логического модуля"
+
+        reply = data.get("reply", "")
+        profile_update = data.get("profile_update", {})
+        notes = data.get("notes")
+
+        # Memory update
+        memory.add_chat_memory(chat_id, user_id, user_input, reply)
+        memory.add_user_memory(user_id, user_input, reply)
+
+        # Profile update
+        if profile_update:
+            db_update_user_profile(user_id, profile_update)
+
+        if notes:
+            db_update_user_notes(user_id, notes)
+
+        return reply, None
 
 
     # --------------------------------------------------
