@@ -39,6 +39,7 @@ def parse_chat_ids(raw: str) -> Set[int]:
 
 BOT_TOKEN = require_env("BOT_TOKEN")
 GROQ_API_KEY = require_env("GROQ_API_KEY")
+WEATHER_API_KEY = require_env("WEATHER_API_KEY")
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 ADMIN_IDS = parse_chat_ids(require_env("ADMIN_IDS"))
 
