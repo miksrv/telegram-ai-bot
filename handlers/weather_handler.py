@@ -3,6 +3,8 @@ Telegram Weather Handler
 Handles /weather command
 """
 
+import time
+import random
 import logging
 from telebot import TeleBot, types
 
@@ -25,6 +27,10 @@ def handle_weather(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         return
 
     city = args[1].strip()
+
+    # --- Simulate typing ---
+    bot.send_chat_action(chat_id, "typing")
+    time.sleep(random.uniform(0.5, 1.2))  # simulate thinking delay
 
     try:
         weather_text = get_weather(city)
