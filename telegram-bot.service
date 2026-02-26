@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=mik
-WorkingDirectory=/home/mik/telegram-bot
-Environment="PATH=/home/mik/telegram-bot/venv/bin"
-ExecStart=/home/mik/telegram-bot/venv/bin/python main.py
+WorkingDirectory=/home/mik/telegram-ai-bot
+Environment="PATH=/home/mik/telegram-ai-bot/venv/bin"
+ExecStart=/home/mik/telegram-ai-bot/venv/bin/python main.py
 Restart=always
 RestartSec=5
 
