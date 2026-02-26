@@ -1,0 +1,15 @@
+[Unit]
+Description=TARS Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=mik
+WorkingDirectory=/home/mik/telegram-bot
+Environment="PATH=/home/mik/telegram-bot/venv/bin"
+ExecStart=/home/mik/telegram-bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
