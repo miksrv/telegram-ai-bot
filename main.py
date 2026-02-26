@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from services.telegram_service import init_bot
 from config.settings import ALLOWED_CHAT_IDS
+from services.mqtt_service import start_mqtt
 
 # --- Graceful shutdown handler ---
 def shutdown(signum, frame):
@@ -34,6 +35,8 @@ if __name__ == "__main__":
 
     logging.info("TARS v1.1 Systems Online")
     logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
+
+    start_mqtt(background=True)
 
     bot = init_bot()
 
