@@ -134,16 +134,23 @@ def format_telemetry_for_telegram(data: dict) -> str:
     if "adcs" in data:
         adcs = data["adcs"]
         lines.append("\n*ADCS:*")
-        if "roll"  in adcs: lines.append(f"  Roll:  {adcs['roll']:.2f}°")
-        if "pitch" in adcs: lines.append(f"  Pitch: {adcs['pitch']:.2f}°")
-        if "yaw"   in adcs: lines.append(f"  Yaw:   {adcs['yaw']:.2f}°")
+        if "roll"  in adcs: lines.append(f" • Roll:  {adcs['roll']:.2f}°")
+        if "pitch" in adcs: lines.append(f" • Pitch: {adcs['pitch']:.2f}°")
+        if "yaw"   in adcs: lines.append(f" • Yaw:   {adcs['yaw']:.2f}°")
+        if "accel_g" in adcs:
+            accel = adcs["accel_g"]
+            lines.append(f" • Accel (g): {accel.get('x', '—')}/{accel.get('y', '—')}/{accel.get('z', '—')}")
+        if "gyro_dps" in adcs:
+            gyro = adcs["gyro_dps"]
+            lines.append(f" • Gyro (°/s): {gyro.get('x', '—')}/{gyro.get('y', '—')}/{gyro.get('z', '—')}")
 
     # Payload (если есть)
     if "payload" in data:
         pl = data["payload"]
         lines.append("\n*Payload:*")
-        if "temperature" in pl: lines.append(f"  Температура: {pl['temperature']} °C")
-        # ... добавь свои поля
+        if "temperature" in pl: lines.append(f" • Temperature: {pl['temperature']} °C")
+        if "humidity" in pl: lines.append(f" • Humidity: {pl['humidity']} %")
+        if "pressure" in pl: lines.append(f" • Pressure: {pl['pressure']} hPa")
 
     # Системные метрики (если передаются)
     if "system" in data:

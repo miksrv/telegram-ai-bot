@@ -1,6 +1,6 @@
 [Unit]
 Description=TARS Telegram Bot
-After=network.target
+After=network.target mosquitto.service
 
 [Service]
 Type=simple
