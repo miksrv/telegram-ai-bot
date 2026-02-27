@@ -5,6 +5,7 @@ Handles /status command — now fetches real CubeSat telemetry via MQTT
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from telebot import TeleBot, types
 from services.mqtt_service import send_command, get_incoming_message
 from config.settings import ADMIN_IDS
@@ -38,7 +39,7 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         "params": {}
     }
 
-    if not send_command(telemetry_cmd, topic="cubesat/command"):
+    if not send_command(telemetry_cmd, topic="cubesat/command/telemetry"):
         bot.send_message(chat_id, "❌ Не удалось отправить запрос телеметрии.")
         return
 
@@ -103,7 +104,19 @@ def format_telemetry_for_telegram(data: dict) -> str:
 
     # Время
     if "timestamp" in data:
-        lines.append(f"• Время: {data['timestamp']}")
+        iso_ts = data["timestamp"]
+        try:
+            # Парсим ISO8601 (с поддержкой Z)
+            if iso_ts.endswith("Z"):
+                dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(iso_ts)
+            # Преобразуем в локальное время
+            local_dt = dt.astimezone()
+            formatted = local_dt.strftime("%d.%m.%Y %H:%M:%S")
+            lines.append(f"• Время: {formatted}")
+        except Exception:
+            lines.append(f"• Время: {iso_ts}")
 
     # EPS (энергетика)
     if "eps" in data:

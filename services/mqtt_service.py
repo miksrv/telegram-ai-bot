@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import threading
-from queue import Queue
+from queue import Queue, Empty
 
 import paho.mqtt.client as mqtt
 
@@ -110,17 +110,5 @@ def get_incoming_message(timeout: float = 1.0) -> dict | None:
     """
     try:
         return message_queue.get(timeout=timeout)
-    except Queue.Empty:
+    except Empty:
         return None
-
-# Example usage in Telegram bot context:
-# In your bot's message handler:
-# if is_cubesat_command(message.text):
-#     command = parse_command_from_llm(message.text)  # Use LLM to extract/validate
-#     send_command(command)
-#
-# In bot's main loop or polling:
-# while True:
-#     msg = get_incoming_message()
-#     if msg:
-#         bot.send_message(TELEGRAM_CHAT_ID, f"CubeSat update from {msg['topic']}: {msg['payload']}")
