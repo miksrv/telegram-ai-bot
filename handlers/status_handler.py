@@ -148,9 +148,17 @@ def format_telemetry_for_telegram(data: dict) -> str:
     # Системные метрики (если передаются)
     if "system" in data:
         sys = data["system"]
-        lines.append("\n*Система (RPi):*")
-        if "cpu_percent" in sys: lines.append(f"  CPU: {sys['cpu_percent']:.1f}%")
-        if "cpu_temperature_c" in sys: lines.append(f"  Temp: {sys['cpu_temperature_c']} °C")
+        lines.append("\n*System (RPi):*")
+        if "cpu_percent" in sys: lines.append(f" • CPU: {sys['cpu_percent']:.1f}%")
+        if "ram_percent" in sys: lines.append(f" • RAM: {sys['ram_percent']:.1f}%")
+        if "swap_percent" in sys: lines.append(f" • Swap: {sys['swap_percent']:.1f}%")
+        if "disk_percent" in sys: lines.append(f" • Disk: {sys['disk_percent']:.1f}%")
+        if "uptime_seconds" in sys:
+            uptime_hours = sys["uptime_seconds"] // 3600
+            uptime_minutes = (sys["uptime_seconds"] % 3600) // 60
+            lines.append(f" • Uptime: {int(uptime_hours)}h {int(uptime_minutes)}m")
+        if "cpu_temperature" in sys: lines.append(f" • CPU Temp: {sys['cpu_temperature']} °C")
+        if "gpu_temperature" in sys: lines.append(f" • GPU Temp: {sys['gpu_temperature']}")
 
     if len(lines) <= 2:
         return "Получена телеметрия, но данных для отображения нет 😔"
