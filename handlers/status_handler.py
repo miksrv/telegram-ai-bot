@@ -33,9 +33,10 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     bot.reply_to(message, "Запрашиваю актуальную телеметрию CubeSat... ⏳")
 
     # Шаг 1: Отправка команды на получение телеметрии
+    request_id = str(int(time.time()))
     telemetry_cmd = {
         "action": "cubesat/command/telemetry",
-        "request_id": str(int(time.time())),
+        "request_id": request_id,
         "params": {}
     }
 
@@ -61,6 +62,9 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         if topic in ["cubesat/telemetry/data"]:
             try:
                 data = json.loads(payload_str)
+                # Проверяем request_id
+                if str(data.get("request_id")) != request_id:
+                    continue  # Ждём свой ответ
 
                 # Форматируем красивый ответ
                 status_text = format_telemetry_for_telegram(data)
