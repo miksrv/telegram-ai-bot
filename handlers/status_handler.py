@@ -158,7 +158,6 @@ def format_telemetry_for_telegram(data: dict) -> str:
             uptime_minutes = (sys["uptime_seconds"] % 3600) // 60
             lines.append(f" • Uptime: {int(uptime_hours)}h {int(uptime_minutes)}m")
         if "cpu_temperature" in sys: lines.append(f" • CPU Temp: {sys['cpu_temperature']} °C")
-        if "gpu_temperature" in sys: lines.append(f" • GPU Temp: {sys['gpu_temperature']}")
 
     if len(lines) <= 2:
         return "Получена телеметрия, но данных для отображения нет 😔"
