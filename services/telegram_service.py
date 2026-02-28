@@ -7,7 +7,7 @@ import logging
 from telebot import TeleBot
 from telebot.types import Message
 
-from handlers import message_handler, status_handler, weather_handler
+from handlers import message_handler, status_handler, weather_handler, photo_handler
 from config.settings import BOT_TOKEN, ALLOWED_CHAT_IDS
 
 
@@ -21,6 +21,10 @@ def init_bot() -> TeleBot:
     @bot.message_handler(commands=["status"])
     def _status_handler(message: Message):
         status_handler.handle_status(bot, message, ALLOWED_CHAT_IDS)
+
+    @bot.message_handler(commands=["photo"])
+    def photo_handler_wrapper(message: Message):
+        photo_handler.handle_photo(bot, message, ALLOWED_CHAT_IDS)
 
     # --- Weather command handler ---
     @bot.message_handler(commands=["weather"])
