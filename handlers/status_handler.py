@@ -128,7 +128,7 @@ def format_telemetry_for_telegram(data: dict) -> str:
         lines.append("\n*EPS:*")
         if "battery" in eps:     lines.append(f"  🔋 Заряд: {eps['battery']}%")
         if "voltage" in eps:     lines.append(f"  ⚡ Напряжение: {eps['voltage']} V")
-        if "solar_power" in eps: lines.append(f"  ☀️ Солнечная мощность: {eps['solar_power']} mW")
+        if "external_power" in eps: lines.append(f"  ☀️ Внешнее питание: {eps['external_power']} mW")
 
     # ADCS (ориентация)
     if "adcs" in data:
