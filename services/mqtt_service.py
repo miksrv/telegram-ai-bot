@@ -25,6 +25,7 @@ def on_connect(client, userdata, flags, rc):
         # Subscribe to relevant CubeSat topics
         # client.subscribe("cubesat/obc/status", qos=1)
         client.subscribe("cubesat/telemetry/data", qos=1)
+        client.subscribe("cubesat/payload/photo", qos=1)
         # client.subscribe("cubesat/telemetry", qos=1)  # Add more as needed
         # client.subscribe("cubesat/command/response", qos=1)  # For command acknowledgments
     else:
