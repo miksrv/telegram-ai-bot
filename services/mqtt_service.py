@@ -22,12 +22,8 @@ message_queue = Queue()  # For handling incoming MQTT messages asynchronously
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         logger.info("Connected to MQTT broker")
-        # Subscribe to relevant CubeSat topics
-        # client.subscribe("cubesat/obc/status", qos=1)
         client.subscribe("cubesat/telemetry/data", qos=1)
         client.subscribe("cubesat/payload/photo", qos=1)
-        # client.subscribe("cubesat/telemetry", qos=1)  # Add more as needed
-        # client.subscribe("cubesat/command/response", qos=1)  # For command acknowledgments
     else:
         logger.error(f"Failed to connect to MQTT, rc={rc}")
 
@@ -35,7 +31,7 @@ def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode('utf-8')
         topic = msg.topic
-        logger.info(f"Received MQTT message on {topic}: {payload}")
+        # logger.info(f"Received MQTT message on {topic}: {payload}")
 
         # Put the message in queue for Telegram bot to process (e.g., send to user)
         message_queue.put({
