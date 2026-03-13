@@ -62,7 +62,7 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
                 if str(data.get("request_id")) != request_id:
                     continue  # не наш ответ
 
-                if data.get("status") != "OK":
+                if data.get("status") != "SUCCESS":
                     reason = data.get("reason", "Неизвестная ошибка")
                     bot.send_message(chat_id, f"❌ CubeSat не смог сделать фото: {reason}")
                     received = True
