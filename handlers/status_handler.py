@@ -5,7 +5,7 @@ Handles /status command — now fetches real CubeSat telemetry via MQTT
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from telebot import TeleBot, types
 from services.mqtt_service import send_command, get_incoming_message
 from config.settings import ADMIN_IDS
@@ -35,12 +35,11 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # Шаг 1: Отправка команды на получение телеметрии
     request_id = str(int(time.time()))
     telemetry_cmd = {
-        "action": "cubesat/command/telemetry",
-        "request_id": request_id,
-        "params": {}
+        "command": "get_telemetry",
+        "request_id": request_id
     }
 
-    if not send_command(telemetry_cmd, topic="cubesat/command/telemetry"):
+    if not send_command(telemetry_cmd, topic="cubesat/command"):
         bot.send_message(chat_id, "❌ Не удалось отправить запрос телеметрии.")
         return
 

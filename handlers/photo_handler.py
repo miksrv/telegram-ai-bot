@@ -32,14 +32,14 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # Отправляем команду
     photo_cmd = {
-        "action": "cubesat/command/photo",
+        "command": "take_photo",
         "request_id": request_id,
         "params": {
             "overlay": overlay
         }
     }
 
-    if not send_command(photo_cmd, topic="cubesat/command/photo"):
+    if not send_command(photo_cmd, topic="cubesat/command"):
         bot.send_message(chat_id, "❌ Не удалось отправить запрос на фото.")
         return
 
@@ -61,8 +61,6 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
                 data = json.loads(payload_str)
                 if str(data.get("request_id")) != request_id:
                     continue  # не наш ответ
-
-                logger.debug(f"Photo response status: {data.get('status')}")
 
                 if data.get("status") != "SUCCESS":
                     reason = data.get("reason", "Неизвестная ошибка")
