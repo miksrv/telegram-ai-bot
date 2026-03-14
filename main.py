@@ -15,7 +15,8 @@ load_dotenv()
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, _log_level, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    # Example: format="%(asctime)s [%(levelname)s] %(message)s",
+    format="[%(levelname)s] %(message)s",
 )
 
 import signal
