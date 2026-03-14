@@ -14,38 +14,39 @@ from config.settings import DB_PATH
 # ==========================================================
 
 def get_connection() -> sqlite3.Connection:
-    """Singleton connection к SQLite"""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
-    return conn
-
-
-conn = get_connection()
-cursor = conn.cursor()
+    """Opens and returns a new SQLite connection."""
+    return sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
 
 
 # ==========================================================
 # TABLE INITIALIZATION
 # ==========================================================
 
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS user_profile (
-        user_id INTEGER PRIMARY KEY,
-        first_name TEXT DEFAULT '',
-        last_name TEXT DEFAULT '',
-        username TEXT DEFAULT '',
-        message_count INTEGER DEFAULT 0,
-        avg_offtopic REAL DEFAULT 0.0,
-        avg_provocation REAL DEFAULT 0.0,
-        avg_spam REAL DEFAULT 0.0,
-        avg_rudeness REAL DEFAULT 0.0,
-        avg_verbosity REAL DEFAULT 0.5,
-        interests TEXT DEFAULT '',
-        notes TEXT DEFAULT '',
-        last_updated INTEGER
-    );
-""")
+def _init_db():
+    conn = get_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_profile (
+                user_id INTEGER PRIMARY KEY,
+                first_name TEXT DEFAULT '',
+                last_name TEXT DEFAULT '',
+                username TEXT DEFAULT '',
+                message_count INTEGER DEFAULT 0,
+                avg_offtopic REAL DEFAULT 0.0,
+                avg_provocation REAL DEFAULT 0.0,
+                avg_spam REAL DEFAULT 0.0,
+                avg_rudeness REAL DEFAULT 0.0,
+                avg_verbosity REAL DEFAULT 0.5,
+                interests TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                last_updated INTEGER
+            );
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
-conn.commit()
+_init_db()
 
 
 # ==========================================================
@@ -56,62 +57,68 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
     """
     Returns a user profile dictionary.
     If there is no record, a default one is created.
-    Optionally updates identity info (first_name, last_name, username)
+    Optionally updates identity info (first_name, last_name, username).
+    Each call opens and closes its own connection to avoid shared-cursor races.
     """
-    row = cursor.execute("""
-        SELECT message_count, avg_offtopic, avg_provocation,
-               avg_spam, avg_rudeness, avg_verbosity,
-               interests, notes, first_name, last_name, username
-        FROM user_profile WHERE user_id=?
-             """, (user_id,)).fetchone()
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("""
+            SELECT message_count, avg_offtopic, avg_provocation,
+                   avg_spam, avg_rudeness, avg_verbosity,
+                   interests, notes, first_name, last_name, username
+            FROM user_profile WHERE user_id=?
+                 """, (user_id,)).fetchone()
 
-    if not row:
-        first_name = identity.get('first_name', '') if identity else ''
-        last_name = identity.get('last_name', '') if identity else ''
-        username = identity.get('username', '') if identity else ''
+        if not row:
+            first_name = identity.get('first_name', '') if identity else ''
+            last_name = identity.get('last_name', '') if identity else ''
+            username = identity.get('username', '') if identity else ''
 
-        cursor.execute("""
-            INSERT INTO user_profile(user_id, first_name, last_name, username, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-            """, (user_id, first_name, last_name, username, int(time.time())))
-        conn.commit()
+            cursor.execute("""
+                INSERT INTO user_profile(user_id, first_name, last_name, username, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+                """, (user_id, first_name, last_name, username, int(time.time())))
+            conn.commit()
+
+            return {
+                "message_count": 0,
+                "avg_offtopic": 0.0,
+                "avg_provocation": 0.0,
+                "avg_spam": 0.0,
+                "avg_rudeness": 0.0,
+                "avg_verbosity": 0.5,
+                "interests": [],
+                "notes": "",
+                "first_name": first_name,
+                "last_name": last_name,
+                "username": username
+            }
+
+        # Если identity передали, обновляем
+        if identity:
+            cursor.execute("""
+                UPDATE user_profile
+                SET first_name=?, last_name=?, username=?, last_updated=?
+                WHERE user_id=?
+                """, (identity.get('first_name',''), identity.get('last_name',''), identity.get('username',''), int(time.time()), user_id))
+            conn.commit()
 
         return {
-            "message_count": 0,
-            "avg_offtopic": 0.0,
-            "avg_provocation": 0.0,
-            "avg_spam": 0.0,
-            "avg_rudeness": 0.0,
-            "avg_verbosity": 0.5,
-            "interests": [],
-            "notes": "",
-            "first_name": first_name,
-            "last_name": last_name,
-            "username": username
+            "message_count": row[0],
+            "avg_offtopic": row[1],
+            "avg_provocation": row[2],
+            "avg_spam": row[3],
+            "avg_rudeness": row[4],
+            "avg_verbosity": row[5],
+            "interests": row[6].split(",") if row[6] else [],
+            "notes": row[7] or "",
+            "first_name": row[8] or "",
+            "last_name": row[9] or "",
+            "username": row[10] or ""
         }
-
-    # Если identity передали, обновляем
-    if identity:
-        cursor.execute("""
-            UPDATE user_profile
-            SET first_name=?, last_name=?, username=?, last_updated=?
-            WHERE user_id=?
-            """, (identity.get('first_name',''), identity.get('last_name',''), identity.get('username',''), int(time.time()), user_id))
-        conn.commit()
-
-    return {
-        "message_count": row[0],
-        "avg_offtopic": row[1],
-        "avg_provocation": row[2],
-        "avg_spam": row[3],
-        "avg_rudeness": row[4],
-        "avg_verbosity": row[5],
-        "interests": row[6].split(",") if row[6] else [],
-        "notes": row[7] or "",
-        "first_name": row[8] or "",
-        "last_name": row[9] or "",
-        "username": row[10] or ""
-    }
+    finally:
+        conn.close()
 
 
 def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
@@ -196,8 +203,5 @@ def update_user_notes(user_id: int, new_info: str):
 # ==========================================================
 
 def close_connection():
-    """Close the connection upon termination"""
-    try:
-        conn.close()
-    except Exception as e:
-        logging.error(f"Error closing DB: {e}")
+    """No-op — connections are now opened and closed per-operation."""
+    pass

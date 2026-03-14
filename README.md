@@ -1,16 +1,19 @@
-# Telegram AI Bot
+# TARS — Telegram AI Bot
 
-A Python-based Telegram bot powered by AI. This project supports multiple AI providers (OpenAI, GROQ, Google Gemini) and can be run locally or in Docker.
+TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (powered by Groq) with a CubeSat satellite ground station interface over MQTT.
 
 ---
 
 ## Features
 
-- Responds to user messages using AI (OpenAI, GROQ, or Google Gemini)
-- Easy to configure and extend
-- Written in Python
-- SQLite user profile database (auto-created)
-- Modular codebase for easy customization
+- **Conversational AI** — responds to mentions ("tars", "TARS", "тарс") and replies in group chats; uses Groq's LLaMA models for text and vision
+- **Adaptive personality** — tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
+- **User profiles** — persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
+- **CubeSat telemetry** — `/status` fetches live telemetry from a connected CubeSat via MQTT and displays it in a formatted message
+- **CubeSat photo** — `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT and sent directly to the chat
+- **Image analysis** — analyzes photos posted in the chat with astronomical context awareness
+- **Weather** — `/weather <city>` fetches current weather from OpenWeatherMap
+- **Rate limiting** — per-user sliding window rate limiter with configurable penalty cooldowns
 
 ---
 
@@ -18,112 +21,166 @@ A Python-based Telegram bot powered by AI. This project supports multiple AI pro
 
 ```
 telegram-ai-bot/
-├── main.py                  # Entry point
-├── requirements.txt         # Python dependencies
-├── Dockerfile, docker-compose.yml
-├── config/                  # Settings
-├── core/                    # AI logic, memory, prompts
-├── database/                # DB logic
-├── handlers/                # Telegram handlers
-├── services/                # LLM, system, telegram services
-├── utils/                   # Utilities
-├── data/tars_user_profiles.db # SQLite DB (auto-created)
+├── main.py                      # Entry point
+├── config/
+│   └── settings.py              # All configuration (loaded from .env)
+├── core/
+│   ├── brain.py                 # LLM calls, memory and profile updates
+│   ├── memory.py                # In-RAM conversation context manager
+│   ├── prompts.py               # System prompt templates
+│   ├── personality_engine.py    # Per-user adaptive behavior rules
+│   └── cooldown.py              # Rate limiter
+├── database/
+│   ├── db.py                    # SQLite operations (user_profile table)
+│   └── profile_repo.py          # Repository layer
+├── handlers/
+│   ├── message_handler.py       # Main message routing
+│   ├── status_handler.py        # /status command (CubeSat telemetry)
+│   ├── photo_handler.py         # /photo command (CubeSat camera)
+│   └── weather_handler.py       # /weather command
+├── services/
+│   ├── telegram_service.py      # Bot initialization and handler registration
+│   ├── mqtt_service.py          # MQTT client and message queue
+│   └── weather_service.py       # OpenWeatherMap API client
+└── utils/
+    ├── triggers.py              # Trigger word detection
+    ├── identity.py              # Telegram identity extraction
+    └── photo.py                 # Telegram photo URL extraction
 ```
 
 ---
 
-## How to Create a New Telegram Bot
+## Requirements
 
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
-2. Start a chat and send the command `/newbot`.
-3. Follow the instructions to set a name and username for your bot.
-4. After creation, BotFather will provide you with a **bot token**. Save this token—you will need it to run your bot.
+- Python 3.10+
+- A Groq API key (free tier available)
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- An OpenWeatherMap API key
+- An MQTT broker (e.g., Mosquitto) running locally on port 1883 for CubeSat features
 
 ---
 
-## Local Installation & Usage
+## Installation
 
 1. **Clone the repository:**
    ```sh
    git clone https://github.com/yourusername/telegram-ai-bot.git
    cd telegram-ai-bot
    ```
+
 2. **Install dependencies:**
    ```sh
    pip install -r requirements.txt
    ```
-3. **Set your environment variables:**
-   - Create a `.env` file in the project root and add:
-     ```env
-     TELEGRAM_BOT_TOKEN=your_bot_token_here
-     # Choose one of the following providers and set the corresponding key:
-     OPENAI_API_KEY=your_openai_key
-     GROQ_API_KEY=your_groq_key
-     GEMINI_API_KEY=your_gemini_key
-     # Optionally, set AI_PROVIDER=openai|groq|genai (default: openai)
-     AI_PROVIDER=openai
-     ```
-   - Or export as environment variables:
-     ```sh
-     export TELEGRAM_BOT_TOKEN=your_bot_token_here
-     export OPENAI_API_KEY=your_openai_key
-     export AI_PROVIDER=openai
-     ```
-4. **Run the bot:**
+
+3. **Create a `.env` file** in the project root:
+   ```env
+   BOT_TOKEN=your_telegram_bot_token
+   GROQ_API_KEY=your_groq_api_key
+   WEATHER_API_KEY=your_openweathermap_api_key
+   ALLOWED_CHAT_IDS=-1001234567890,-1009876543210
+   ADMIN_IDS=123456789
+   ```
+
+4. **Create the data directory:**
+   ```sh
+   mkdir -p data
+   ```
+
+5. **Run the bot:**
    ```sh
    python main.py
    ```
-   The database file (`data/tars_user_profiles.db`) will be created automatically on first run if it does not exist.
+   The SQLite database (`data/tars_user_profiles.db`) is created automatically on first run.
 
 ---
 
-## Running with Docker
+## Configuration
 
-1. **Build and start the bot using Docker Compose:**
-   ```sh
-   docker-compose up --build
-   ```
-   - Set your environment variables in `.env` or in `docker-compose.yml` under `environment`.
-   - The database will be created automatically in the `data/` directory inside the container.
+All configuration is in `config/settings.py`, loaded from environment variables.
 
-2. **Alternatively, build and run manually:**
-   ```sh
-   docker build -t telegram-ai-bot .
-   docker run -e TELEGRAM_BOT_TOKEN=your_bot_token_here \
-              -e OPENAI_API_KEY=your_openai_key \
-              -e AI_PROVIDER=openai \
-              telegram-ai-bot
-   ```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BOT_TOKEN` | Yes | Telegram bot token from BotFather |
+| `GROQ_API_KEY` | Yes | Groq API key |
+| `WEATHER_API_KEY` | Yes | OpenWeatherMap API key |
+| `ALLOWED_CHAT_IDS` | Yes | Comma-separated list of authorized group chat IDs |
+| `ADMIN_IDS` | Yes | Comma-separated list of admin Telegram user IDs |
+
+**Behavioral tuning (edit `settings.py` directly):**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `USER_COOLDOWN_SECONDS` | `10` | Minimum seconds between responses per user |
+| `RATE_LIMIT_COUNT` | `2` | Max messages per rate limit window |
+| `RATE_LIMIT_WINDOW` | `60` | Rate limit window in seconds |
+| `RATE_LIMIT_PENALTY` | `180` | Lockout duration after rate limit breach |
+| `MAX_CONTEXT_MESSAGES` | `10` | Chat messages included in LLM context |
+| `MAX_INPUT_CHARS` | `1500` | Max characters accepted from user input |
+| `MEMORY_TTL_SECONDS` | `86400` | Seconds before inactive chat memory is evicted |
 
 ---
 
-## AI Provider Support
+## Commands
 
-The bot supports the following AI providers:
+| Command | Access | Description |
+|---------|--------|-------------|
+| `tars <message>` | All allowed chats | Mention the bot to start a conversation |
+| `/status` | Allowed chats + admins | Fetch live CubeSat telemetry |
+| `/photo [overlay]` | Allowed chats + admins | Request a photo from the CubeSat camera |
+| `/weather <city>` | Allowed chats + admins | Get current weather for a city |
 
-- **OpenAI** (default)
-- **GROQ**
-- **Google Gemini (genai)**
+The bot also responds when users reply directly to any of its messages.
 
-Set the provider via the `AI_PROVIDER` environment variable:
-- `openai` for OpenAI
-- `groq` for GROQ
-- `genai` for Google Gemini
+---
 
-Set the corresponding API key as an environment variable (`OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`).
+## MQTT Integration
+
+The bot connects to a local MQTT broker (`localhost:1883`) and uses the following topics:
+
+| Topic | Direction | Purpose |
+|-------|-----------|---------|
+| `cubesat/command` | Publish | Send commands to the CubeSat OBC |
+| `cubesat/telemetry/data` | Subscribe | Receive telemetry responses |
+| `cubesat/payload/photo` | Subscribe | Receive photo responses |
+
+Command format (JSON):
+```json
+{"command": "get_telemetry", "request_id": "1741000000"}
+{"command": "take_photo",    "request_id": "photo_1741000000", "params": {"overlay": false}}
+```
+
+If no MQTT broker is available, the bot will log an error and continue running — only the `/status` and `/photo` commands will be non-functional.
+
+---
+
+## Access Control
+
+- The bot only responds in chats listed in `ALLOWED_CHAT_IDS`
+- In private chats, only users listed in `ADMIN_IDS` receive responses
+- Unauthorized mentions in other groups receive a redirect message pointing to @astronom_chat
 
 ---
 
 ## Troubleshooting
 
-- **ModuleNotFoundError: No module named 'services'**
-  - Make sure you run the bot from the project root directory.
-  - If using Docker, check the `WORKDIR` in your Dockerfile.
-- **Database file not created**
-  - Ensure the `data/` directory exists and is writable.
-  - The bot will auto-create the DB on first run if permissions are correct.
-- **RemoteDisconnected or connection errors**
-  - This may be due to network issues or API rate limits. Try switching providers or check your API key.
+**Bot doesn't respond in a group**
+- Confirm the group's chat ID is in `ALLOWED_CHAT_IDS` (use `@userinfobot` to find it)
+- Ensure the bot has been added to the group and has permission to read messages
+
+**`ModuleNotFoundError: No module named 'services'`**
+- Run the bot from the project root directory, not from a subdirectory
+
+**`RuntimeError: ENV variable X is not set`**
+- Check your `.env` file — all five required variables must be present
+
+**MQTT connection failed**
+- Verify Mosquitto (or another broker) is running: `mosquitto -v`
+- Default broker is `localhost:1883` — change `MQTT_BROKER` / `MQTT_PORT` in `settings.py` if needed
+
+**`/status` or `/photo` times out**
+- Confirm the CubeSat OBC is powered on and connected to the same broker
+- Check that it publishes to the correct response topics with a matching `request_id`
 
 ---
 

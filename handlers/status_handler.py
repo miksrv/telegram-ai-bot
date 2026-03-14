@@ -1,24 +1,29 @@
 """ Telegram Status Handler
-Handles /status command — now fetches real CubeSat telemetry via MQTT
+Handles /status command — fetches real CubeSat telemetry via MQTT
 """
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime
+from queue import Empty
+
 from telebot import TeleBot, types
-from services.mqtt_service import send_command, get_incoming_message
+from services.mqtt_service import send_command, register_request, unregister_request
 from config.settings import ADMIN_IDS
 
 MAX_WAIT = 30.0
 
 logger = logging.getLogger(__name__)
 
+
 def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     """
     Обрабатывает команду /status:
     - Запрашивает телеметрию у CubeSat через MQTT
-    - Ждёт и отправляет полученные данные пользователю
+    - Ожидает ответ в фоновом потоке (не блокирует polling)
+    - Отправляет полученные данные пользователю
     """
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -29,71 +34,49 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         bot.reply_to(message, "Доступ запрещён.")
         return
 
-    # Сообщение о начале запроса
     bot.reply_to(message, "Запрашиваю актуальную телеметрию CubeSat... ⏳")
 
-    # Шаг 1: Отправка команды на получение телеметрии
     request_id = str(int(time.time()))
-    telemetry_cmd = {
-        "command": "get_telemetry",
-        "request_id": request_id
-    }
 
-    if not send_command(telemetry_cmd, topic="cubesat/command"):
+    # Register queue BEFORE sending the command to avoid missing a fast response
+    q = register_request(request_id)
+
+    if not send_command({"command": "get_telemetry", "request_id": request_id}, topic="cubesat/command"):
+        unregister_request(request_id)
         bot.send_message(chat_id, "❌ Не удалось отправить запрос телеметрии.")
         return
 
-    # Шаг 2: Ожидание ответа (максимум 25–30 секунд)
-    start = time.time()
-    received = False
+    def wait_and_respond():
+        try:
+            try:
+                msg = q.get(timeout=MAX_WAIT)
+            except Empty:
+                bot.send_message(chat_id, "⏰ Таймаут: телеметрия не пришла за 30 секунд. Попробуйте позже.")
+                return
 
-    while time.time() - start < MAX_WAIT:
-        msg = get_incoming_message(timeout=0.8)
-
-        if msg is None:
-            time.sleep(0.2)
-            continue
-
-        topic = msg["topic"]
-        payload_str = msg["payload"]
-
-        # Проверяем, что это именно ответ с телеметрией
-        if topic in ["cubesat/telemetry/data"]:
+            payload_str = msg["payload"]
             try:
                 data = json.loads(payload_str)
-                # Проверяем request_id
-                if str(data.get("request_id")) != request_id:
-                    continue  # Ждём свой ответ
-
-                # Форматируем красивый ответ
                 status_text = format_telemetry_for_telegram(data)
-
                 bot.send_message(
                     chat_id,
                     status_text,
                     parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
-                received = True
-                break
-
             except json.JSONDecodeError:
                 logger.error(f"Невалидный JSON в телеметрии: {payload_str[:200]}...")
                 bot.send_message(chat_id, "Получены данные, но формат некорректный 😕")
-                received = True
-                break
-
             except Exception as e:
                 logger.exception("Ошибка обработки телеметрии")
                 bot.send_message(chat_id, f"Ошибка при обработке ответа: {str(e)}")
-                received = True
-                break
+        finally:
+            unregister_request(request_id)
 
-    if not received:
-        bot.send_message(chat_id, "⏰ Таймаут: телеметрия не пришла за 30 секунд. Попробуйте позже.")
+    threading.Thread(target=wait_and_respond, daemon=True).start()
+
 
 # ──────────────────────────────────────────────────────────────
-# Пример функции форматирования (адаптируй под реальную структуру твоей телеметрии)
 def format_telemetry_for_telegram(data: dict) -> str:
     """
     Преобразует словарь телеметрии в читаемый Markdown-текст для Telegram
