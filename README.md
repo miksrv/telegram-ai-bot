@@ -6,14 +6,16 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 
 ## Features
 
-- **Conversational AI** — responds to mentions ("tars", "TARS", "тарс") and replies in group chats; uses Groq's LLaMA models for text and vision
+- **Conversational AI** — responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses Groq's LLaMA models for text and vision
+- **Proactive engagement** — autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
 - **Adaptive personality** — tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
 - **User profiles** — persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
-- **CubeSat telemetry** — `/status` fetches live telemetry from a connected CubeSat via MQTT and displays it in a formatted message
-- **CubeSat photo** — `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT and sent directly to the chat
 - **Image analysis** — analyzes photos posted in the chat with astronomical context awareness
+- **CubeSat telemetry** — `/status` fetches live telemetry from a connected CubeSat via MQTT
+- **CubeSat photo** — `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT
 - **Weather** — `/weather <city>` fetches current weather from OpenWeatherMap
 - **Rate limiting** — per-user sliding window rate limiter with configurable penalty cooldowns
+- **Conversation memory** — in-RAM chat and per-user context, persisted to SQLite on shutdown and reloaded on restart
 
 ---
 
@@ -21,31 +23,33 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 
 ```
 telegram-ai-bot/
-├── main.py                      # Entry point
+├── main.py                          # Entry point
 ├── config/
-│   └── settings.py              # All configuration (loaded from .env)
+│   └── settings.py                  # All configuration (loaded from .env)
 ├── core/
-│   ├── brain.py                 # LLM calls, memory and profile updates
-│   ├── memory.py                # In-RAM conversation context manager
-│   ├── prompts.py               # System prompt templates
-│   ├── personality_engine.py    # Per-user adaptive behavior rules
-│   └── cooldown.py              # Rate limiter
+│   ├── brain.py                     # LLM calls, memory/profile updates, proactive posting
+│   ├── memory.py                    # In-RAM conversation context (chat + user), SQLite persistence
+│   ├── prompts.py                   # System prompt templates (conversational + proactive)
+│   ├── personality_engine.py        # Per-user adaptive behavior rules
+│   ├── proactive_engine.py          # Per-chat state machine (daily cap, gap, scheduling)
+│   └── cooldown.py                  # Sliding window rate limiter
 ├── database/
-│   ├── db.py                    # SQLite operations (user_profile table)
-│   └── profile_repo.py          # Repository layer
+│   ├── db.py                        # SQLite: user_profile + messages tables, all CRUD
+│   └── profile_repo.py              # Re-export layer used by brain.py
 ├── handlers/
-│   ├── message_handler.py       # Main message routing
-│   ├── status_handler.py        # /status command (CubeSat telemetry)
-│   ├── photo_handler.py         # /photo command (CubeSat camera)
-│   └── weather_handler.py       # /weather command
+│   ├── message_handler.py           # Message routing: observe, trigger detection, cooldowns
+│   ├── status_handler.py            # /status command (CubeSat telemetry)
+│   ├── photo_handler.py             # /photo command (CubeSat camera)
+│   └── weather_handler.py           # /weather command
 ├── services/
-│   ├── telegram_service.py      # Bot initialization and handler registration
-│   ├── mqtt_service.py          # MQTT client and message queue
-│   └── weather_service.py       # OpenWeatherMap API client
+│   ├── telegram_service.py          # Bot initialization and handler registration
+│   ├── mqtt_service.py              # MQTT client, per-request response queues
+│   ├── background_service.py        # Cleanup daemon + proactive posting daemon
+│   └── weather_service.py           # OpenWeatherMap API client
 └── utils/
-    ├── triggers.py              # Trigger word detection
-    ├── identity.py              # Telegram identity extraction
-    └── photo.py                 # Telegram photo URL extraction
+    ├── triggers.py                  # Trigger word detection + reply-to-bot check
+    ├── identity.py                  # Telegram identity extraction
+    └── photo.py                     # Telegram photo URL extraction
 ```
 
 ---
@@ -53,10 +57,10 @@ telegram-ai-bot/
 ## Requirements
 
 - Python 3.10+
-- A Groq API key (free tier available)
+- A Groq API key (free tier available at [console.groq.com](https://console.groq.com))
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- An OpenWeatherMap API key
-- An MQTT broker (e.g., Mosquitto) running locally on port 1883 for CubeSat features
+- An OpenWeatherMap API key (free tier available)
+- An MQTT broker (e.g., Mosquitto) running on port 1883 — only required for `/status` and `/photo`
 
 ---
 
@@ -73,13 +77,10 @@ telegram-ai-bot/
    pip install -r requirements.txt
    ```
 
-3. **Create a `.env` file** in the project root:
-   ```env
-   BOT_TOKEN=your_telegram_bot_token
-   GROQ_API_KEY=your_groq_api_key
-   WEATHER_API_KEY=your_openweathermap_api_key
-   ALLOWED_CHAT_IDS=-1001234567890,-1009876543210
-   ADMIN_IDS=123456789
+3. **Configure the environment:**
+   ```sh
+   cp .env.example .env
+   # Edit .env and fill in your credentials
    ```
 
 4. **Create the data directory:**
@@ -97,17 +98,37 @@ telegram-ai-bot/
 
 ## Configuration
 
-All configuration is in `config/settings.py`, loaded from environment variables.
+All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example` to `.env` and fill in the required values.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BOT_TOKEN` | Yes | Telegram bot token from BotFather |
-| `GROQ_API_KEY` | Yes | Groq API key |
-| `WEATHER_API_KEY` | Yes | OpenWeatherMap API key |
-| `ALLOWED_CHAT_IDS` | Yes | Comma-separated list of authorized group chat IDs |
-| `ADMIN_IDS` | Yes | Comma-separated list of admin Telegram user IDs |
+### Required
 
-**Behavioral tuning (edit `settings.py` directly):**
+| Variable | Description |
+|----------|-------------|
+| `BOT_TOKEN` | Telegram bot token from BotFather |
+| `GROQ_API_KEY` | Groq API key |
+| `WEATHER_API_KEY` | OpenWeatherMap API key |
+| `ALLOWED_CHAT_IDS` | Comma-separated list of authorized group chat IDs |
+| `ADMIN_IDS` | Comma-separated list of admin Telegram user IDs |
+
+### Proactive Engagement (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROACTIVE_ENABLED` | `true` | Master toggle; set to `false` to disable the feature entirely |
+| `PROACTIVE_CHAT_IDS` | _(empty)_ | Comma-separated chat IDs to enroll for proactive observation and posting. Must be a subset of `ALLOWED_CHAT_IDS`. If empty, proactive posting is inactive even if enabled |
+| `PROACTIVE_MAX_PER_DAY` | `5` | Maximum proactive posts per chat per calendar day (UTC) |
+| `PROACTIVE_MIN_GAP_SECONDS` | `3600` | Minimum seconds between two consecutive proactive posts (1 hour) |
+| `PROACTIVE_NEXT_MIN_SECONDS` | `7200` | Lower bound of the random reschedule window after a post (2 hours) |
+| `PROACTIVE_NEXT_MAX_SECONDS` | `14400` | Upper bound of the random reschedule window after a post (4 hours) |
+| `PROACTIVE_CONTEXT_MESSAGES` | `25` | Number of recent messages passed to the LLM as context |
+| `PROACTIVE_MIN_CONTEXT_MESSAGES` | `10` | Minimum messages in DB before proactive posting activates for a chat |
+| `PROACTIVE_MIN_WORD_COUNT` | `3` | Minimum word count for a message to be saved for context |
+| `PROACTIVE_MIN_CHAR_COUNT` | `15` | Minimum character count (alternative to word count; OR logic) |
+| `MESSAGE_TTL_SECONDS` | `86400` | How long a message is retained in the DB (24 hours) |
+| `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Cleanup daemon wake interval (30 minutes) |
+| `PROACTIVE_LOOP_INTERVAL_SECONDS` | `600` | Proactive posting daemon wake interval (10 minutes) |
+
+### Behavioral tuning (edit `settings.py` directly)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -117,7 +138,7 @@ All configuration is in `config/settings.py`, loaded from environment variables.
 | `RATE_LIMIT_PENALTY` | `180` | Lockout duration after rate limit breach |
 | `MAX_CONTEXT_MESSAGES` | `10` | Chat messages included in LLM context |
 | `MAX_INPUT_CHARS` | `1500` | Max characters accepted from user input |
-| `MEMORY_TTL_SECONDS` | `86400` | Seconds before inactive chat memory is evicted |
+| `MEMORY_TTL_SECONDS` | `86400` | Seconds before inactive chat context is evicted from RAM |
 
 ---
 
@@ -126,11 +147,31 @@ All configuration is in `config/settings.py`, loaded from environment variables.
 | Command | Access | Description |
 |---------|--------|-------------|
 | `tars <message>` | All allowed chats | Mention the bot to start a conversation |
-| `/status` | Allowed chats + admins | Fetch live CubeSat telemetry |
-| `/photo [overlay]` | Allowed chats + admins | Request a photo from the CubeSat camera |
-| `/weather <city>` | Allowed chats + admins | Get current weather for a city |
+| `/status` | Allowed chats | Fetch live CubeSat telemetry |
+| `/photo [overlay]` | Allowed chats | Request a photo from the CubeSat camera |
+| `/weather <city>` | Allowed chats | Get current weather for a city |
 
 The bot also responds when users reply directly to any of its messages.
+
+---
+
+## Proactive Engagement
+
+When enabled, TARS passively observes text messages in enrolled chats and periodically posts spontaneous, context-aware messages — observations, questions, or dry remarks — without any user trigger.
+
+**How it works:**
+
+1. Every qualifying message (text, non-command, ≥3 words or ≥15 characters) sent in a `PROACTIVE_CHAT_IDS` chat is stored in the `messages` table.
+2. A background daemon wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS` and checks each enrolled chat.
+3. If the daily cap has not been reached, the minimum gap has passed, and there is enough context (≥ `PROACTIVE_MIN_CONTEXT_MESSAGES` rows), the LLM is called with the recent message history.
+4. The generated reply is sent to the chat via `bot.send_message()`.
+
+The LLM is **never** called reactively by this feature — only the scheduled daemon triggers it. A separate cleanup daemon purges messages older than `MESSAGE_TTL_SECONDS` every `CLEANUP_LOOP_INTERVAL_SECONDS`.
+
+To activate, set at minimum:
+```env
+PROACTIVE_CHAT_IDS=-1001234567890
+```
 
 ---
 
@@ -150,7 +191,88 @@ Command format (JSON):
 {"command": "take_photo",    "request_id": "photo_1741000000", "params": {"overlay": false}}
 ```
 
-If no MQTT broker is available, the bot will log an error and continue running — only the `/status` and `/photo` commands will be non-functional.
+If no MQTT broker is available, the bot starts normally — only `/status` and `/photo` will be non-functional.
+
+---
+
+## Deployment
+
+### Running as a systemd service (Linux)
+
+Create a service file at `/etc/systemd/system/tars.service`:
+
+```ini
+[Unit]
+Description=TARS Telegram Bot
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=tars
+WorkingDirectory=/opt/tars
+ExecStart=/opt/tars/venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/opt/tars/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start:
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable tars
+sudo systemctl start tars
+sudo journalctl -u tars -f   # follow logs
+```
+
+### Recommended server setup
+
+```sh
+# Create a dedicated user
+sudo useradd -r -m -d /opt/tars tars
+
+# Clone and set up
+sudo -u tars git clone https://github.com/yourusername/telegram-ai-bot.git /opt/tars
+cd /opt/tars
+sudo -u tars python3 -m venv venv
+sudo -u tars venv/bin/pip install -r requirements.txt
+
+# Create the data directory (SQLite database lives here)
+sudo -u tars mkdir -p /opt/tars/data
+
+# Create the .env file
+sudo -u tars cp .env.example .env
+sudo -u tars nano .env   # fill in credentials
+
+# Install and start the service
+sudo cp deploy/tars.service /etc/systemd/system/tars.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now tars
+```
+
+### MQTT broker (Mosquitto)
+
+If using CubeSat features, install and start Mosquitto:
+```sh
+sudo apt install mosquitto mosquitto-clients
+sudo systemctl enable --now mosquitto
+```
+
+The bot connects to `localhost:1883` by default. To change the broker address, set `MQTT_BROKER` and `MQTT_PORT` in `settings.py`.
+
+### Updating
+
+```sh
+sudo systemctl stop tars
+sudo -u tars git pull
+sudo -u tars venv/bin/pip install -r requirements.txt
+sudo systemctl start tars
+```
 
 ---
 
@@ -159,6 +281,7 @@ If no MQTT broker is available, the bot will log an error and continue running �
 - The bot only responds in chats listed in `ALLOWED_CHAT_IDS`
 - In private chats, only users listed in `ADMIN_IDS` receive responses
 - Unauthorized mentions in other groups receive a redirect message pointing to @astronom_chat
+- Proactive posting only occurs in chats explicitly listed in `PROACTIVE_CHAT_IDS`
 
 ---
 
@@ -167,20 +290,26 @@ If no MQTT broker is available, the bot will log an error and continue running �
 **Bot doesn't respond in a group**
 - Confirm the group's chat ID is in `ALLOWED_CHAT_IDS` (use `@userinfobot` to find it)
 - Ensure the bot has been added to the group and has permission to read messages
+- For groups with privacy mode, disable it via BotFather or make the bot an admin
 
 **`ModuleNotFoundError: No module named 'services'`**
-- Run the bot from the project root directory, not from a subdirectory
+- Run the bot from the project root directory: `python main.py`, not `python core/brain.py`
 
 **`RuntimeError: ENV variable X is not set`**
-- Check your `.env` file — all five required variables must be present
+- Check your `.env` file — all five required variables must be present and non-empty
 
 **MQTT connection failed**
-- Verify Mosquitto (or another broker) is running: `mosquitto -v`
-- Default broker is `localhost:1883` — change `MQTT_BROKER` / `MQTT_PORT` in `settings.py` if needed
+- Verify Mosquitto is running: `mosquitto -v` or `systemctl status mosquitto`
+- Default broker is `localhost:1883` — adjust `MQTT_BROKER` / `MQTT_PORT` in `settings.py` if needed
 
 **`/status` or `/photo` times out**
-- Confirm the CubeSat OBC is powered on and connected to the same broker
-- Check that it publishes to the correct response topics with a matching `request_id`
+- Confirm the CubeSat OBC is powered on and connected to the same MQTT broker
+- Check that it publishes responses to the correct topics with a matching `request_id`
+
+**Proactive posting not working**
+- Verify `PROACTIVE_CHAT_IDS` contains valid chat IDs that are also in `ALLOWED_CHAT_IDS`
+- The bot needs at least `PROACTIVE_MIN_CONTEXT_MESSAGES` (default: 10) saved messages before it will post — the chat needs some activity first
+- Check logs for `"Proactive engagement active for N chat(s)"` at startup
 
 ---
 

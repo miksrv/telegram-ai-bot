@@ -61,12 +61,18 @@ utils/
 
 ## Configuration (.env)
 
+Copy `.env.example` to `.env`. Required variables:
+
 ```env
 BOT_TOKEN=          # Telegram bot token
 GROQ_API_KEY=       # Groq API key
 WEATHER_API_KEY=    # OpenWeatherMap API key
 ALLOWED_CHAT_IDS=   # Comma-separated Telegram chat IDs
 ADMIN_IDS=          # Comma-separated Telegram user IDs (admins)
+```
+
+Optional proactive engagement variables (see `.env.example` for the full list):
+```env
 PROACTIVE_ENABLED=  # true/false (default: true)
 PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive observation
 ```
@@ -78,9 +84,9 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 | Text generation | `llama-3.3-70b-versatile` |
 | Image analysis | `meta-llama/llama-4-scout-17b-16e-instruct` |
 
-## LLM Response Contract
+## LLM Response Contracts
 
-The LLM always returns valid JSON:
+**Conversational path** (`brain.think`, `brain.analyze_image`):
 ```json
 {
   "reply": "Text response in Russian",
@@ -93,6 +99,13 @@ The LLM always returns valid JSON:
     "interests": ["astronomy", "astrophotography"]
   },
   "notes": "Short user summary replacing previous value"
+}
+```
+
+**Proactive path** (`brain.post_proactively`): only `reply` is returned — no single user is being addressed so `profile_update` and `notes` are absent.
+```json
+{
+  "reply": "Spontaneous message in Russian"
 }
 ```
 
