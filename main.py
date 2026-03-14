@@ -4,9 +4,22 @@ Initializes all services and starts polling
 """
 
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load .env and configure logging before any other import.
+# This ensures basicConfig takes effect for module-level log calls made
+# during import, and that LOG_LEVEL from .env is respected.
+load_dotenv()
+
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
 import signal
 import sys
-import os
 import time
 
 # Add project root to sys.path
@@ -39,11 +52,6 @@ signal.signal(signal.SIGTERM, shutdown)
 
 # --- Main ---
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-
     logging.info("TARS v1.1 Systems Online")
     logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
 

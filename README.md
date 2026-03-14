@@ -128,6 +128,12 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Cleanup daemon wake interval (30 minutes) |
 | `PROACTIVE_LOOP_INTERVAL_SECONDS` | `600` | Proactive posting daemon wake interval (10 minutes) |
 
+### Logging (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+
 ### Behavioral tuning (edit `settings.py` directly)
 
 | Setting | Default | Description |
