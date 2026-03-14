@@ -10,22 +10,24 @@ TARS is a Telegram bot for the Russian astronomy community (@astronom_chat), nam
 main.py                          # Entry point: starts MQTT + bot polling
 config/settings.py               # All configuration, loaded from .env
 core/
-  brain.py                       # TARSBrain: LLM calls, memory/profile updates
+  brain.py                       # TARSBrain: LLM calls, memory/profile updates, post_proactively()
   memory.py                      # MemoryManager: in-RAM chat + user context, flushed to SQLite on shutdown
-  prompts.py                     # System prompt templates and builders
+  prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE)
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
+  proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling)
 database/
-  db.py                          # SQLite: user_profile table, CRUD operations
+  db.py                          # SQLite: user_profile, messages tables; all CRUD operations
   profile_repo.py                # Re-exports db.py functions used by brain.py
 handlers/
-  message_handler.py             # Main message routing: trigger detection, cooldowns, dispatch
+  message_handler.py             # Main message routing: observe block, trigger detection, cooldowns, dispatch
   status_handler.py              # /status: requests CubeSat telemetry via MQTT, waits for reply
   photo_handler.py               # /photo: requests CubeSat photo via MQTT, waits for reply
   weather_handler.py             # /weather: calls OpenWeatherMap API
 services/
   telegram_service.py            # Bot init, handler registration
   mqtt_service.py                # MQTT client, message queue (paho-mqtt)
+  background_service.py          # Cleanup daemon + proactive posting daemon threads
   llm_service.py                 # (exists, not actively used — brain.py handles LLM calls)
 utils/
   triggers.py                    # Trigger word detection + is_reply_to_bot
@@ -36,10 +38,16 @@ utils/
 ## Key Data Flows
 
 ### Conversational message
-1. `message_handler.handle_message` → trigger/reply check → cooldown check
+1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check
 2. `brain.think` → builds prompt from memory + user profile → Groq API
 3. LLM returns JSON `{reply, profile_update, notes}` → memory updated, profile saved to SQLite
 4. `bot.reply_to` sends response
+
+### Proactive posting (background)
+1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
+2. For each `PROACTIVE_CHAT_IDS` chat: `proactive_engine.should_post()` checks daily cap, gap, and context size
+3. On approval: `brain.post_proactively()` fetches recent messages → Groq API → JSON `{reply}`
+4. `bot.send_message()` sends; `proactive_engine.record_post()` advances schedule
 
 ### CubeSat telemetry (/status)
 1. `status_handler.handle_status` → publishes `{"command": "get_telemetry"}` to `cubesat/command`
@@ -59,6 +67,8 @@ GROQ_API_KEY=       # Groq API key
 WEATHER_API_KEY=    # OpenWeatherMap API key
 ALLOWED_CHAT_IDS=   # Comma-separated Telegram chat IDs
 ADMIN_IDS=          # Comma-separated Telegram user IDs (admins)
+PROACTIVE_ENABLED=  # true/false (default: true)
+PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive observation
 ```
 
 ## Models
@@ -112,7 +122,6 @@ The LLM always returns valid JSON:
 
 See `ROADMAP.md` for a full list of bugs and planned improvements.
 
-**Critical issues to be aware of:**
-- `database/db.py` uses a global shared SQLite cursor that is not thread-safe — concurrent writes from different threads can race
+**Known issues to be aware of:**
 - `status_handler` and `photo_handler` block the Telegram polling thread for up to 30–45s, preventing other messages from being handled during that window
 - The MQTT message queue is shared — concurrent `/status` or `/photo` requests from multiple users can steal each other's responses

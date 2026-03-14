@@ -96,3 +96,21 @@ DB_PATH = os.path.join(
 ALLOWED_COMMANDS = {
     "status": True
 }
+
+# --------------------------------------------------
+# Proactive Engagement
+# --------------------------------------------------
+
+PROACTIVE_ENABLED             = os.getenv("PROACTIVE_ENABLED", "true").lower() == "true"
+PROACTIVE_CHAT_IDS            = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", "")) & ALLOWED_CHAT_IDS
+PROACTIVE_MAX_PER_DAY         = int(os.getenv("PROACTIVE_MAX_PER_DAY", "5"))
+PROACTIVE_MIN_GAP_SECONDS     = int(os.getenv("PROACTIVE_MIN_GAP_SECONDS", "3600"))
+PROACTIVE_NEXT_MIN_SECONDS    = int(os.getenv("PROACTIVE_NEXT_MIN_SECONDS", "7200"))
+PROACTIVE_NEXT_MAX_SECONDS    = int(os.getenv("PROACTIVE_NEXT_MAX_SECONDS", "14400"))
+PROACTIVE_CONTEXT_MESSAGES    = int(os.getenv("PROACTIVE_CONTEXT_MESSAGES", "25"))
+PROACTIVE_MIN_CONTEXT_MESSAGES = int(os.getenv("PROACTIVE_MIN_CONTEXT_MESSAGES", "10"))
+PROACTIVE_MIN_WORD_COUNT      = int(os.getenv("PROACTIVE_MIN_WORD_COUNT", "3"))
+PROACTIVE_MIN_CHAR_COUNT      = int(os.getenv("PROACTIVE_MIN_CHAR_COUNT", "15"))
+MESSAGE_TTL_SECONDS           = int(os.getenv("MESSAGE_TTL_SECONDS", "86400"))
+CLEANUP_LOOP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_LOOP_INTERVAL_SECONDS", "1800"))
+PROACTIVE_LOOP_INTERVAL_SECONDS = int(os.getenv("PROACTIVE_LOOP_INTERVAL_SECONDS", "600"))

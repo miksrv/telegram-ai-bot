@@ -7,18 +7,23 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from datetime import datetime
+
 from config.settings import (
     MODEL_TEXT,
     MODEL_VISION,
     GROQ_API_KEY,
     MAX_INPUT_CHARS,
+    PROACTIVE_CONTEXT_MESSAGES,
+    PROACTIVE_MIN_CONTEXT_MESSAGES,
 )
 
 from core.memory import memory
-from core.prompts import build_general_prompt, get_vision_prompt
+from core.prompts import build_general_prompt, get_vision_prompt, build_proactive_prompt
 from core.personality_engine import PersonalityEngine
 
 from database.profile_repo import db_get_user_profile, db_update_user_profile, db_update_user_notes
+from database.db import get_recent_messages
 
 
 # --------------------------------------------------
@@ -265,6 +270,50 @@ class TARSBrain:
 
         return response.json()["choices"][0]["message"]["content"].strip()
 
+
+    # --------------------------------------------------
+    # PROACTIVE POSTING
+    # --------------------------------------------------
+    def post_proactively(self, chat_id: int):
+        """
+        Generates and returns a proactive message for the given chat.
+
+        Returns the reply string on success, or None if there is not enough
+        context or if the LLM call fails.
+        """
+        try:
+            rows = get_recent_messages(chat_id, PROACTIVE_CONTEXT_MESSAGES)
+            if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
+                return None
+
+            context_lines = [
+                f"{r['first_name']}: {r['text']}" for r in rows
+            ]
+            utc_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            prompt = build_proactive_prompt(context_lines, utc_time)
+
+            raw = self._call_llm(
+                MODEL_TEXT,
+                [{"role": "system", "content": prompt}],
+                temperature=0.85,
+                max_tokens=200,
+                top_p=0.95,
+            )
+
+            data = self._parse_json_safe(raw)
+            if not data:
+                return None
+
+            reply = data.get("reply", "").strip()
+            if not reply:
+                return None
+
+            memory.add_chat_memory(chat_id, user_id=0, user_msg="", bot_reply=reply)
+            return reply
+
+        except Exception as e:
+            logging.error(f"post_proactively error (chat={chat_id}): {e}")
+            return None
 
     # --------------------------------------------------
     # Robust JSON parsing (handles common model formatting issues)

@@ -57,6 +57,23 @@ def _init_db():
                 history_json TEXT
             );
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id             INTEGER NOT NULL,
+                user_id             INTEGER NOT NULL,
+                telegram_message_id INTEGER NOT NULL,
+                first_name          TEXT    DEFAULT '',
+                username            TEXT    DEFAULT '',
+                text                TEXT    NOT NULL,
+                word_count          INTEGER NOT NULL,
+                timestamp           INTEGER NOT NULL
+            );
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
+            ON messages(chat_id, timestamp);
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -285,6 +302,78 @@ def load_memory() -> Tuple[dict, dict]:
         conn.close()
 
     return chat_data, user_data
+
+
+# ==========================================================
+# MESSAGES TABLE OPERATIONS
+# ==========================================================
+
+def save_message(
+        chat_id: int,
+        user_id: int,
+        telegram_message_id: int,
+        first_name: str,
+        username: str,
+        text: str,
+):
+    """Saves a qualifying text message for proactive context."""
+    word_count = len(text.split())
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO messages(chat_id, user_id, telegram_message_id,
+                                 first_name, username, text, word_count, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (chat_id, user_id, telegram_message_id,
+              first_name, username, text, word_count, int(time.time())))
+        conn.commit()
+
+
+def get_recent_messages(chat_id: int, limit: int) -> list:
+    """
+    Returns up to `limit` most recent messages for a chat, ordered oldest-first.
+    Each row is a dict with keys: first_name, username, text.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT first_name, username, text
+            FROM messages
+            WHERE chat_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (chat_id, limit)).fetchall()
+        return [{"first_name": r[0], "username": r[1], "text": r[2]}
+                for r in reversed(rows)]
+    finally:
+        conn.close()
+
+
+def purge_expired_messages(ttl_seconds: int) -> int:
+    """Deletes messages older than ttl_seconds. Returns the number of rows deleted."""
+    cutoff = int(time.time()) - ttl_seconds
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+        return cursor.rowcount
+
+
+def ensure_user_profile_exists(
+        user_id: int,
+        first_name: str,
+        last_name: str,
+        username: str,
+):
+    """
+    Inserts a default user_profile row if none exists.
+    Uses INSERT OR IGNORE — zero-cost no-op on duplicate. No LLM involved.
+    """
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO user_profile(user_id, first_name, last_name, username, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, first_name, last_name, username, int(time.time())))
+        conn.commit()
 
 
 # ==========================================================

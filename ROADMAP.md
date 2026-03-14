@@ -10,361 +10,345 @@ context of a Russian-language astronomy community chat.
 
 ---
 
-### [AI-1] Rolling Conversation Summarization
+### [AI-1] Proactive Engagement Mode
 
 **Problem.**
-`MemoryManager.chat_storage` is a `deque(maxlen=50)`. When the deque is full, the
-oldest messages are silently dropped. `get_chat_context` then surfaces only the last 10
-entries. Any context older than those 10 messages — topic threads, prior conclusions,
-prior user questions — is permanently lost. For a busy community chat this horizon can
-be as short as a few minutes.
+TARS participates only when explicitly mentioned or replied to. Conversations flow
+past it — observations shared, questions left hanging, celestial events mentioned —
+without any involvement. This makes TARS feel like a vending machine rather than a
+community member. At the same time, any mechanism that calls the LLM on every message
+would be prohibitively expensive and noisy.
 
 **Solution.**
-Before a message is evicted from the deque, trigger a background summarization pass:
-the LLM condenses the oldest N messages into a compact paragraph and stores it as a
-rolling `summary` string alongside the deque. The prompt builder then injects both the
-rolling summary and the recent transcript, giving TARS effective long-term chat memory
-without unbounded token growth.
+Two complementary mechanisms work in tandem:
 
-**Sub-tasks.**
+1. **Passive observation** — every qualifying text message in an authorized chat is
+   stored in a new `messages` table. This is pure bookkeeping: no LLM is involved.
+   The table is the source of truth for "what the community has been talking about."
 
-- [ ] **AI-1.1** Add a `summary: str` field to `chat_storage` entries (default `""`).
-- [ ] **AI-1.2** Add `SUMMARY_TRIGGER_RATIO` setting (e.g. `0.8`): summarization fires
-      when `len(history) >= MEMORY_LIMIT * SUMMARY_TRIGGER_RATIO`.
-- [ ] **AI-1.3** Write `SUMMARY_PROMPT_TEMPLATE` in `core/prompts.py`: instructs the
-      LLM to produce a 3–5 sentence factual summary of a message batch, in Russian,
-      preserving names, topics discussed, and conclusions reached.
-- [ ] **AI-1.4** Add `TARSBrain.summarize_context(chat_id)` method: calls the LLM with
-      the oldest `MEMORY_LIMIT // 2` messages and writes the result back to
-      `chat_storage[chat_id]["summary"]`, then removes those messages from the deque.
-- [ ] **AI-1.5** Update `MemoryManager.get_chat_context()` to prepend the rolling
-      summary (if non-empty) before the recent transcript lines, separated by a
-      `--- Earlier context ---` marker so the LLM can distinguish recency.
-- [ ] **AI-1.6** Call `brain.summarize_context(chat_id)` inside `add_chat_memory()`
-      when the trigger ratio is exceeded, in a daemon thread so it does not block
-      the polling loop.
-- [ ] **AI-1.7** Add `summarization_count` stat to `MemoryManager.size()` for
-      observability.
+2. **Proactive posting loop** — a background daemon thread wakes on a scheduled
+   cadence and decides, per chat, whether to have TARS post a spontaneous message.
+   The LLM is called *only* at this point, using the recent message history as
+   context. The loop enforces a hard daily cap (default: 5 per chat) and a minimum
+   gap between consecutive posts to prevent clustering.
+
+The LLM is **never** called reactively by this feature. It is called only when the
+proactive loop decides it is time to post, or when a user explicitly triggers TARS
+through the normal path.
 
 ---
 
-### [AI-2] Astronomy Domain Classifier & Domain-Aware Prompt Routing
+#### New Database Table: `messages`
 
-**Problem.**
-All messages go through a single generic `GENERAL_PROMPT_TEMPLATE`. TARS has no
-awareness of which sub-domain of astronomy it is operating in. A question about
-astrophotography processing techniques requires a very different register, depth, and
-vocabulary than a question about relativistic cosmology or a satellite telemetry
-reading — yet the prompt makes no distinction.
+Stores qualifying text messages from chats listed in `PROACTIVE_CHAT_IDS`. This is
+a strict subset of `ALLOWED_CHAT_IDS`: a chat may be authorized to receive TARS
+replies without being enrolled in proactive observation. Images, stickers, audio,
+video, and documents are excluded. Messages with fewer than `PROACTIVE_MIN_WORD_COUNT`
+words **and** fewer than `PROACTIVE_MIN_CHAR_COUNT` characters are also excluded (the
+two thresholds are OR-ed: a message passing either threshold is saved).
 
-**Solution.**
-Add a lightweight domain classification step before building the system prompt.
-Classify the message into one of the astronomy sub-domains and inject a domain-specific
-prompt extension that shifts TARS's persona and knowledge emphasis accordingly.
+```sql
+CREATE TABLE IF NOT EXISTS messages (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id             INTEGER NOT NULL,
+    user_id             INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    first_name          TEXT    DEFAULT '',
+    username            TEXT    DEFAULT '',
+    text                TEXT    NOT NULL,
+    word_count          INTEGER NOT NULL,
+    timestamp           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, timestamp);
+```
 
-**Domains.**
+`first_name` and `username` are denormalized from the Telegram message object at
+insert time so context rendering never needs a join to `user_profile`, and
+historical context remains readable even if a user later changes their display name.
 
-| ID | Domain | Examples |
-|----|--------|---------|
-| `astrophotography` | Image capture, processing, stacking, equipment | "How to reduce noise in a 30s sub?", photo shared |
-| `observational` | Visual astronomy, what's visible tonight, sky conditions | "Can I see Saturn tonight?", "What's the best DSO for 4\" scope?" |
-| `theoretical` | Physics, cosmology, mathematics | "Why does the Hubble tension exist?", "Explain redshift" |
-| `space_tech` | Satellites, rockets, CubeSat, missions | "What orbit is Starlink in?", telemetry discussion |
-| `equipment` | Telescopes, mounts, accessories, buying advice | "Should I buy an EQ6-R?", "Best eyepiece for planetary?" |
-| `general` | Off-topic, casual, greetings | Catch-all |
+`word_count` is precomputed at insert time (`len(text.split())`) so the proactive
+loop can filter in SQL without a Python round-trip.
 
-**Sub-tasks.**
-
-- [ ] **AI-2.1** Write `DOMAIN_CLASSIFIER_PROMPT` in `core/prompts.py`: a minimal
-      single-turn prompt that classifies a message into one of the 6 domain IDs above.
-      Output must be a single JSON field `{"domain": "<id>"}` to minimize token cost.
-- [ ] **AI-2.2** Add `TARSBrain.classify_domain(message_text) -> str` method: makes a
-      fast, low-temperature (0.1) call using `MODEL_TEXT` with `max_tokens=20`.
-      Returns one of the 6 domain strings; falls back to `"general"` on any error.
-- [ ] **AI-2.3** Add `DOMAIN_PROMPT_EXTENSIONS: dict[str, str]` in `core/prompts.py`:
-      a mapping from domain ID to a short (3–6 line) specialist instruction block.
-      Example for `astrophotography`: "You are advising an astrophotographer. Speak
-      in terms of exposure time, calibration frames, stacking software (Siril,
-      PixInsight, DeepSkyStacker), and sensor noise characteristics."
-- [ ] **AI-2.4** Update `build_general_prompt()` to accept an optional `domain_block`
-      parameter and append it after the adaptive behavior directives section.
-- [ ] **AI-2.5** Update `TARSBrain.think()` to call `classify_domain()` and pass the
-      resulting extension to `build_general_prompt()`.
-- [ ] **AI-2.6** Store the classified domain in the LLM JSON response contract as an
-      optional `"domain"` echo field and record it in `db_update_user_profile` to
-      enrich per-user interest depth tracking (see AI-4).
-- [ ] **AI-2.7** Add `DOMAIN_CLASSIFICATION_ENABLED` boolean setting so the feature
-      can be toggled off to reduce API call volume if needed.
+Messages are retained for `MESSAGE_TTL_SECONDS` (default: `86400`, 24 hours) and
+purged by the cleanup daemon described below.
 
 ---
 
-### [AI-3] Proactive Engagement Mode (Passive Observer)
+#### Proactive State Machine: `ProactiveEngine`
 
-**Problem.**
-TARS participates only when explicitly mentioned or replied to. In a community chat,
-countless interesting messages pass by without TARS involvement — a user shares a
-stunning photo without tagging TARS, someone asks a question that goes unanswered,
-an observed celestial event is mentioned. This makes TARS feel like a vending machine
-rather than a community member.
+A per-chat in-RAM state machine that governs when TARS is allowed to post
+proactively. State resets on restart (the daily cap is a UX constraint, not a
+safety invariant, so this is acceptable).
 
-**Solution.**
-Let TARS passively observe all authorized chat messages. After each unaddressed message
-(no trigger, no direct reply), a lightweight relevance check determines whether TARS
-should proactively interject. Proactive replies are gated by relevance score, cooldown,
-and a global per-chat interjection budget to prevent TARS from becoming noisy.
+State stored per `chat_id`:
 
-**Proactive triggers (any one is sufficient).**
-1. A question mark is present and the message has no reply for N subsequent messages.
-2. The message topic matches a strong interest of a chat member TARS knows.
-3. An astronomically significant keyword is detected (planet names, messier/NGC
-   identifiers, equipment model numbers, solar events).
-4. A photo is shared without a caption or TARS mention (offer image analysis).
+```python
+{
+    "count_today":     int,  # posts sent so far today (0..PROACTIVE_MAX_PER_DAY)
+    "day_reset_at":    int,  # Unix timestamp of next UTC midnight; counter resets here
+    "last_posted_at":  int,  # Unix timestamp of the last proactive post (0 = never)
+    "next_attempt_at": int,  # Unix timestamp: earliest the loop may fire again
+}
+```
 
-**Sub-tasks.**
+`should_post(chat_id)` returns `True` only when **all** of the following hold:
+- `time.time() >= next_attempt_at`
+- `count_today < PROACTIVE_MAX_PER_DAY`
+- `time.time() - last_posted_at >= PROACTIVE_MIN_GAP_SECONDS`
+- The `messages` table has at least `PROACTIVE_MIN_CONTEXT_MESSAGES` rows for this
+  chat (prevents posting into a silent or newly-joined chat)
 
-- [ ] **AI-3.1** Add `PROACTIVE_ENABLED` and `PROACTIVE_RELEVANCE_THRESHOLD` (0–1)
-      settings in `config/settings.py`.
-- [ ] **AI-3.2** Add `PROACTIVE_CHAT_BUDGET` setting: maximum proactive replies per
-      chat per hour to prevent flooding. Default: `3`.
-- [ ] **AI-3.3** Track a `proactive_budget` counter per chat in `MemoryManager`
-      (dict keyed by chat_id, reset hourly via TTL).
-- [ ] **AI-3.4** Write `PROACTIVE_RELEVANCE_PROMPT` in `core/prompts.py`: ask the LLM
-      to score a message's astronomical relevance and TARS's potential added value on
-      a 0–1 scale. Output: `{"relevance": 0.0..1.0, "reason": "short string"}`.
-- [ ] **AI-3.5** Add `TARSBrain.should_engage(message_text, chat_id) -> bool` method:
-      applies keyword pre-filter first (fast, no API call), then LLM relevance scoring
-      if pre-filter passes, then budget check.
-- [ ] **AI-3.6** Write `PROACTIVE_REPLY_PROMPT` extension in `core/prompts.py`:
-      instructs TARS that it is interjecting voluntarily, not being addressed, and
-      should phrase the reply as a natural observation ("Заметил, что...") rather than
-      a direct answer to a question.
-- [ ] **AI-3.7** Update `message_handler.handle_message()`: after the
-      "ignore if no trigger/reply" gate, call `should_engage()` and route to
-      `brain.think()` with a proactive context flag if it returns `True`.
-- [ ] **AI-3.8** Ensure proactive replies do not update the cooldown timer so they
-      don't block the user from triggering TARS normally shortly after.
+`record_post(chat_id)` is called after a successful send:
+- Increments `count_today`
+- Updates `last_posted_at = now`
+- If `count_today < PROACTIVE_MAX_PER_DAY`: sets `next_attempt_at = now +
+  random.randint(PROACTIVE_NEXT_MIN_SECONDS, PROACTIVE_NEXT_MAX_SECONDS)`.
+- If the daily cap is now reached: sets `next_attempt_at = day_reset_at` instead.
+
+`_reset_day_if_needed(chat_id)` is called at the top of every `should_post()` call.
+If `time.time() >= day_reset_at`: resets `count_today = 0` and advances
+`day_reset_at` to the following UTC midnight.
 
 ---
 
-### [AI-4] Deep Interest Profiling with Per-Topic Expertise Tracking
+#### Background Service: `services/background_service.py`
 
-**Problem.**
-`interests` in the user profile is a flat comma-separated string (`"astrophotography,
-deep sky objects, PixInsight"`). There is no depth dimension: TARS cannot distinguish
-a user who has mentioned astrophotography once from one who has discussed it in 50
-conversations. As a result, TARS cannot modulate expertise level per topic — it uses
-the same `verbosity` metric globally, regardless of what the user actually knows.
+A new module that hosts both daemon threads. Neither loop blocks the Telegram
+polling thread.
 
-**Solution.**
-Replace the flat interest string with a JSON object stored in the SQLite column. Each
-interest entry carries a `count` (number of times mentioned), `depth` (0–1, computed
-from count), and `last_seen` timestamp. `PersonalityEngine` uses the depth of the
-*active* topic (detected via AI-2's domain classifier) to calibrate response
-sophistication per topic rather than globally.
+**Cleanup loop** (`start_cleanup_loop`):
+Wakes every `CLEANUP_LOOP_INTERVAL_SECONDS` (default: `1800`, 30 minutes) and runs:
+```sql
+DELETE FROM messages WHERE timestamp < ?
+```
+with `cutoff = int(time.time()) - MESSAGE_TTL_SECONDS`. Logs the number of rows
+deleted. Wrapped in `try/except` so a transient DB error does not kill the thread.
 
-**Sub-tasks.**
-
-- [ ] **AI-4.1** Design the interest schema:
-      `{"astrophotography": {"count": 14, "depth": 0.7, "last_seen": 1710000000}, ...}`
-- [ ] **AI-4.2** Write a DB migration in `database/db.py`: add `interests_v2 TEXT`
-      column to `user_profile` table; populate from existing `interests` string on
-      first read (each existing interest gets `count=1, depth=0.1, last_seen=now`).
-- [ ] **AI-4.3** Update `get_user_profile()` to deserialize `interests_v2` JSON and
-      return it as `profile["interest_map"]`.
-- [ ] **AI-4.4** Update `update_user_profile()`: when new interests arrive from the
-      LLM `profile_update`, increment `count` for matching interests, insert new ones,
-      and recompute `depth = min(1.0, count / INTEREST_DEPTH_SATURATION)` where
-      `INTEREST_DEPTH_SATURATION` is a new setting (default: `20`).
-- [ ] **AI-4.5** Add `PersonalityEngine.expertise_rule(depth: float) -> str`:
-      10-level mapping from `0.0` (complete novice) to `1.0` (domain expert), producing
-      directives like "Explain from first principles" → "Assume expert-level familiarity,
-      skip fundamentals".
-- [ ] **AI-4.6** Update `TARSBrain._build_user_context()`: if domain is known (from
-      AI-2), look up the depth for that domain's interest key and include an expertise
-      directive in the profile summary via `PersonalityEngine.expertise_rule()`.
-- [ ] **AI-4.7** Update the prompt to include top-3 interests with depth percentages
-      (e.g. "astrophotography (70%), deep sky objects (40%), CubeSat (10%)") so the LLM
-      can reason about the user's knowledge landscape at a glance.
+**Proactive loop** (`start_proactive_loop`):
+Wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS` (default: `600`, 10 minutes) and
+iterates over `allowed_chat_ids`. For each chat:
+1. Calls `engine.should_post(chat_id)`.
+2. If `False`: skip.
+3. If `True`: calls `brain.post_proactively(chat_id)` to generate a reply.
+4. On success: sends via `bot.send_message(chat_id, reply)`, calls
+   `engine.record_post(chat_id)`, adds the reply to `MemoryManager` chat context
+   so subsequent triggered responses know what TARS said spontaneously.
+5. On LLM failure: logs the error, does **not** call `record_post()` (a failed
+   attempt does not consume the daily budget), reschedules
+   `next_attempt_at = now + PROACTIVE_NEXT_MIN_SECONDS`.
 
 ---
 
-### [AI-5] Response Confidence Signaling
+#### New Prompt: `PROACTIVE_PROMPT_TEMPLATE`
 
-**Problem.**
-The LLM sometimes produces plausible-sounding but factually incorrect answers,
-especially on specific numerical data (distances, magnitudes, orbital parameters,
-historical dates). For a science-oriented community this is harmful: confident errors
-erode trust in TARS and can mislead less experienced members.
+Stored in `core/prompts.py` alongside `GENERAL_PROMPT_TEMPLATE`. Produces only
+`{"reply": "..."}` — there is no single user being addressed, so `profile_update`
+and `notes` are absent and must not appear in the output.
 
-**Solution.**
-Extend the JSON response contract with a `confidence` field (0–1). Low-confidence
-responses are automatically qualified with an honest uncertainty disclaimer. High-
-confidence responses remain unmodified. The threshold is configurable.
+```
+You are TARS, an autonomous robot from the movie "Interstellar".
+You are monitoring an astronomy community chat. You have decided to post a
+spontaneous message — an observation, a thought-provoking question, or a dry,
+intelligent remark grounded in what the community has recently been discussing.
 
-**Sub-tasks.**
+You must output **valid JSON only** with this exact structure:
+{
+  "reply": "<your message in Russian>"
+}
 
-- [ ] **AI-5.1** Add `"confidence": 0.0..1.0` to the `GENERAL_PROMPT_TEMPLATE` JSON
-      contract definition, with an instruction: "Set to 1.0 for well-established facts,
-      lower for estimates, approximations, or areas where your training data may be
-      incomplete or outdated. Astronomy-specific: always lower confidence for numerical
-      values like distances, magnitudes, or dates unless you are certain."
-- [ ] **AI-5.2** Add `CONFIDENCE_DISCLAIMER_THRESHOLD` setting (default: `0.65`).
-- [ ] **AI-5.3** Update `TARSBrain._process_llm_response()`: extract `confidence` from
-      the parsed JSON; if `confidence < CONFIDENCE_DISCLAIMER_THRESHOLD`, append a
-      brief, in-character Russian disclaimer to the reply (e.g., "Уточните в надёжном
-      источнике — моя уверенность в этих данных невысока.").
-- [ ] **AI-5.4** Log the confidence value alongside the message for observability:
-      `logging.info(f"Confidence={confidence:.2f} user={user_id}")`.
-- [ ] **AI-5.5** Store the running average confidence per user in their profile
-      (new `avg_confidence` column in `user_profile`) as a diagnostic metric — users
-      who consistently ask questions TARS is uncertain about may be experts probing the
-      edges of the LLM's knowledge.
+Rules:
+- Write in Russian.
+- Do not address any specific user by name. Speak to the chat as a whole.
+- The message should feel like a natural interjection: a curiosity, a provocation,
+  a wry observation, or an open question — not a reply to any single person.
+- 1 to 3 sentences maximum. Brevity is mandatory.
+- Maintain the TARS character: dry, precise, slightly ironic, technically minded.
+- Do not greet, apologize, announce yourself, or explain that you are speaking
+  spontaneously. Just say the thing.
+- Do not repeat or paraphrase anything from the most recent TARS message in context.
+- Base the remark on the conversation context provided. Do not invent events,
+  objects, or names not present in the context.
+- Never output anything outside the JSON object.
 
----
+Recent conversation ({context_size} most recent messages, oldest first):
+{context}
 
-### [AI-6] Chat Atmosphere Engine (Chat-Level Personality Adaptation)
+Current UTC time: {utc_time}
+```
 
-**Problem.**
-`PersonalityEngine` adapts TARS's behavior per user (rudeness, verbosity, etc.) but
-TARS has no model of the chat as a whole. The same directives are applied whether the
-chat is in a fast-moving, playful brainstorming session or a focused technical
-deep-dive. TARS can feel tonally misaligned when the chat atmosphere conflicts with
-an individual user's historical profile.
-
-**Solution.**
-Add a chat-level behavioral model: a lightweight set of signals computed from recent
-chat_storage activity. These signals produce "atmosphere directives" that augment the
-per-user directives with context about the current state of the group conversation.
-
-**Atmosphere signals.**
-
-| Signal | Computation | Effect |
-|--------|-------------|--------|
-| `velocity` | Messages per minute in the last 10 min | High velocity → shorter replies |
-| `topic_focus` | Fraction of recent messages in the same domain (AI-2) | High focus → deeper technical responses |
-| `emotional_tone` | Aggregated `provocation` from recent senders' profiles | High tone → more neutral, de-escalating replies |
-| `engagement` | Ratio of messages addressed to TARS vs total | Low engagement → briefer, less intrusive replies |
-
-**Sub-tasks.**
-
-- [ ] **AI-6.1** Add `message_timestamps: deque` to `chat_storage` entries, updated on
-      every message received (not just TARS interactions) to enable velocity tracking.
-      `message_handler.py` must call a new `memory.record_message(chat_id)` on every
-      non-filtered message.
-- [ ] **AI-6.2** Add `ChatAtmosphereEngine` class in a new file
-      `core/atmosphere_engine.py`, mirroring `PersonalityEngine`'s structure:
-      `compute(chat_storage_entry, recent_profiles) -> str` returning a directive block.
-- [ ] **AI-6.3** Implement the four signal computations in `ChatAtmosphereEngine`:
-      velocity, topic focus (requires AI-2), emotional tone (reads profile cache),
-      engagement ratio (TARS replies vs total message count).
-- [ ] **AI-6.4** Update `TARSBrain._build_user_context()` to also call
-      `ChatAtmosphereEngine.compute()` and return an `atmosphere_block` string.
-- [ ] **AI-6.5** Update `build_general_prompt()` to accept and inject the
-      `atmosphere_block` as a new "Current chat atmosphere:" section in the prompt,
-      positioned between the user identity block and the user message.
-- [ ] **AI-6.6** Add `ATMOSPHERE_ENGINE_ENABLED` setting for toggle control.
+The builder function `build_proactive_prompt(context_lines, utc_time)` formats this
+template. `context_lines` is a list of `"FirstName: text"` strings retrieved from
+the `messages` table.
 
 ---
 
-### [AI-7] Multi-Turn Reasoning for Complex Questions
+#### User Profile Seeding (No LLM)
 
-**Problem.**
-TARS answers all questions in a single LLM call regardless of complexity. Simple
-factual questions and multi-step reasoning problems (e.g. "Why is there a discrepancy
-between early and late universe measurements of the Hubble constant?") go through the
-same pipeline. Complex questions get shallow answers because a single forward pass at
-800 tokens is insufficient for the problem's depth.
+Every time a message is saved to `messages`, the system ensures a `user_profile`
+row exists for that user via a new `ensure_user_profile_exists()` function:
 
-**Solution.**
-Add a two-stage pipeline for complex questions: a first "reasoning" pass generates
-a hidden chain-of-thought analysis; the second "reply" pass distills the reasoning into
-a well-structured, user-facing Russian response. The complexity gate uses a fast
-heuristic to avoid the double-call overhead on simple messages.
+```sql
+INSERT OR IGNORE INTO user_profile(user_id, first_name, last_name, username, last_updated)
+VALUES (?, ?, ?, ?, ?)
+```
 
-**Sub-tasks.**
-
-- [ ] **AI-7.1** Define complexity heuristics in `core/brain.py` as
-      `_is_complex(text: str) -> bool`: returns `True` when any of the following hold:
-      - message length > 200 characters
-      - contains "почему", "объясни", "как работает", "в чём разница", "докажи"
-      - contains a physics/cosmology keyword set (configurable in settings)
-- [ ] **AI-7.2** Write `REASONING_PROMPT_TEMPLATE` in `core/prompts.py`: instructs the
-      LLM to reason step-by-step in English (for best chain-of-thought quality) about
-      the question, listing assumptions, intermediate steps, and known uncertainties.
-      Output is plain text, not JSON.
-- [ ] **AI-7.3** Write `REASONING_SYNTHESIS_PROMPT` in `core/prompts.py`: takes the
-      user question + reasoning output and produces the final JSON response contract,
-      but now grounded in the explicit reasoning chain.
-- [ ] **AI-7.4** Add `TARSBrain._reason(message_text, context) -> str` method:
-      calls the LLM with `REASONING_PROMPT_TEMPLATE`, high `max_tokens` (1500),
-      temperature 0.3 for factual consistency.
-- [ ] **AI-7.5** Update `TARSBrain.think()`: if `_is_complex()` returns `True`, call
-      `_reason()` first and pass the reasoning output as additional context to the
-      main `_call_llm()` pass.
-- [ ] **AI-7.6** Add `COMPLEX_REASONING_ENABLED` setting and log when the reasoning
-      path is triggered: `logging.info(f"Complex reasoning triggered | user={user_id}")`.
+`INSERT OR IGNORE` makes this a zero-cost no-op when the profile already exists —
+no prior `SELECT` is needed. No LLM is involved at any stage. The only fields
+populated are those directly available from the Telegram `Message` object:
+`user_id`, `first_name`, `last_name`, `username`. All behavioral metrics default
+to their column defaults (`0.0` / `0.5`).
 
 ---
 
-### [AI-8] Reply Thread Context Walking
+#### New Settings (`config/settings.py`)
 
-**Problem.**
-Telegram supports threaded replies. When user B replies to user A's message (not to
-TARS), and then tags TARS in a follow-up, TARS has no visibility into the A→B thread.
-It can only see the message it is being asked about, not the conversational lineage
-that motivated the question. This frequently produces contextually wrong answers.
-
-**Solution.**
-Walk the `reply_to_message` chain from the incoming message up to its root, collecting
-the thread as an ordered list of (user, text) pairs, and inject it as a "Message thread"
-block in the prompt — distinct from the rolling chat context — so TARS can reason
-within the correct conversational scope.
-
-**Sub-tasks.**
-
-- [ ] **AI-8.1** Add `extract_thread_context(message: types.Message, max_depth: int = 5) -> list[dict]`
-      utility function in `utils/triggers.py` (or a new `utils/thread.py`): traverses
-      `message.reply_to_message` recursively up to `max_depth` hops, collecting
-      `{"user": first_name, "text": text}` dicts.
-- [ ] **AI-8.2** Add `THREAD_CONTEXT_MAX_DEPTH` setting (default: `5`) and
-      `THREAD_CONTEXT_ENABLED` toggle.
-- [ ] **AI-8.3** Update `build_general_prompt()` to accept an optional `thread_context`
-      parameter; when non-empty, render it as a "Reply thread (innermost last):" block
-      between the conversation context and the user message.
-- [ ] **AI-8.4** Update `message_handler.handle_message()`: call `extract_thread_context()`
-      when the incoming message is a reply (whether to TARS or to another user), and
-      pass the result to `brain.think()`.
-- [ ] **AI-8.5** Update `TARSBrain.think()` signature to accept `thread_context` and
-      forward it to `build_general_prompt()`.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `PROACTIVE_ENABLED` | `True` | Master toggle; disables both daemon threads when `False` |
+| `PROACTIVE_CHAT_IDS` | `set[int]` | Explicit set of chat IDs for which observation and proactive posting are active. Parsed from `PROACTIVE_CHAT_IDS` in `.env` (same comma-separated format as `ALLOWED_CHAT_IDS`). Must be a subset of `ALLOWED_CHAT_IDS`; any ID not in `ALLOWED_CHAT_IDS` is silently ignored at startup. |
+| `PROACTIVE_MAX_PER_DAY` | `5` | Hard cap on proactive posts per chat per calendar day (UTC) |
+| `PROACTIVE_MIN_GAP_SECONDS` | `3600` | Minimum seconds between any two consecutive proactive posts |
+| `PROACTIVE_NEXT_MIN_SECONDS` | `7200` | Lower bound of the random reschedule window after a post |
+| `PROACTIVE_NEXT_MAX_SECONDS` | `14400` | Upper bound of the random reschedule window after a post |
+| `PROACTIVE_CONTEXT_MESSAGES` | `25` | Number of recent messages passed to the LLM as context |
+| `PROACTIVE_MIN_CONTEXT_MESSAGES` | `10` | Minimum rows in `messages` before proactive posting activates for a chat |
+| `PROACTIVE_MIN_WORD_COUNT` | `3` | Word-count lower bound for saving a message |
+| `PROACTIVE_MIN_CHAR_COUNT` | `15` | Character-count lower bound (alternative to word count; OR logic) |
+| `MESSAGE_TTL_SECONDS` | `86400` | How long a message row is retained (24 hours) |
+| `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Interval between cleanup daemon passes |
+| `PROACTIVE_LOOP_INTERVAL_SECONDS` | `600` | Interval between proactive daemon passes |
 
 ---
 
-## Improvements
+#### Sub-tasks
 
-### Features
+**A — Database layer**
 
-**[IMP-4] `/status` and `/photo` progress feedback**
-Currently the user receives only one "requesting…" message and then waits silently for up to 30–45s. A follow-up "still waiting…" message at the halfway point would improve UX.
+- [x] **AI-3.1** Add the `messages` table definition and `idx_messages_chat_ts`
+      index to `_init_db()` in `database/db.py`.
+- [x] **AI-3.2** Add `save_message(chat_id, user_id, telegram_message_id,
+      first_name, username, text)` to `database/db.py`. Compute
+      `word_count = len(text.split())` before the `INSERT`. Single write, no prior
+      `SELECT`.
+- [x] **AI-3.3** Add `get_recent_messages(chat_id, limit) -> list[dict]` to
+      `database/db.py`:
+      ```sql
+      SELECT first_name, username, text
+      FROM messages
+      WHERE chat_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+      ```
+      Reverse the result list before returning so the oldest row appears first
+      in the context string.
+- [x] **AI-3.4** Add `purge_expired_messages(ttl_seconds) -> int` to
+      `database/db.py`. Returns `cursor.rowcount` for the caller to log.
+- [x] **AI-3.5** Add `ensure_user_profile_exists(user_id, first_name, last_name,
+      username)` to `database/db.py` using `INSERT OR IGNORE`. No reads,
+      no LLM, no exceptions on duplicate.
 
-**[IMP-5] Admin command to view user profile**
-Admins have no way to inspect a user's stored behavioral profile or notes. An `/admin profile <user_id>` command would be useful for moderation.
+**B — Configuration**
 
-**[IMP-6] `/clear` or `/reset` command**
-No mechanism for users to reset their conversation memory or profile scores. Useful when a user wants a fresh start with the bot.
+- [x] **AI-3.6** Add all thirteen settings from the table above to
+      `config/settings.py` with the specified defaults and a `# Proactive
+      Engagement` section comment. Parse `PROACTIVE_CHAT_IDS` with the existing
+      `parse_chat_ids()` helper, then intersect the result with `ALLOWED_CHAT_IDS`
+      and log a warning for any ID that was dropped:
+      `PROACTIVE_CHAT_IDS = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", "")) & ALLOWED_CHAT_IDS`.
 
-**[IMP-7] Weather command UX**
-`/weather` currently requires a city name argument. Handling the case where no argument is provided (replying with usage instructions) would improve the user experience.
+**C — Message filtering and saving**
 
-**[IMP-8] Vision analysis for CubeSat photos**
-Photos received from the CubeSat via `/photo` are sent directly to the chat without any analysis. Passing them through `brain.analyze_image` would add scientific commentary.
+- [x] **AI-3.7** In `message_handler.handle_message()`, insert an "observe" block
+      immediately after the authorized-chat guard and before the trigger/reply check.
+      Execute for every message in an authorized group chat (including those that
+      don't trigger TARS). Filter logic:
+      - Skip if `chat_id not in PROACTIVE_CHAT_IDS` (observation is opt-in per chat).
+      - Skip if `message.content_type != "text"` (excludes photo, sticker, voice,
+        video, document, etc.).
+      - Skip if `text_content.startswith("/")` (commands are not conversational).
+      - Skip if `len(text_content.split()) < PROACTIVE_MIN_WORD_COUNT` AND
+        `len(text_content) < PROACTIVE_MIN_CHAR_COUNT`.
+      - On pass: call `save_message(...)` then `ensure_user_profile_exists(...)`.
+        Both calls are wrapped in a `try/except` so a DB error does not interrupt
+        normal message processing.
 
-### Code Quality
+**D — ProactiveEngine**
 
-**[IMP-9] Consolidate trigger configuration**
-`TRIGGERS` appears in both `config/settings.py` (unused) and `utils/triggers.py` (hardcoded). A single source of truth in `settings.py`, imported by `triggers.py`, would be cleaner.
+- [x] **AI-3.8** Create `core/proactive_engine.py`. Implement `ProactiveEngine`
+      class with `should_post(chat_id) -> bool`, `record_post(chat_id)`,
+      `_reset_day_if_needed(chat_id)`, and `_schedule_next(chat_id)`.
+      Compute `day_reset_at` as the next UTC midnight:
+      ```python
+      import calendar
+      from datetime import datetime, date, timedelta
+      tomorrow = date.today() + timedelta(days=1)
+      day_reset_at = calendar.timegm(tomorrow.timetuple())
+      ```
+- [x] **AI-3.9** Add module-level singleton `proactive_engine = ProactiveEngine()`
+      at the bottom of `core/proactive_engine.py`.
 
-**[IMP-10] Type annotations on public interfaces**
-Several public functions lack return type annotations (`handle_message`, `handle_status`, `handle_photo`, `start_mqtt`). Adding them would improve IDE support and catch bugs earlier.
+**E — Prompt**
 
-**[IMP-11] Replace `time.sleep` in MQTT wait loops with event-driven approach**
-The `time.sleep(0.2)` in the polling loops in `status_handler` and `photo_handler` is a busy-wait anti-pattern. Using `threading.Event` or `asyncio` would be cleaner and more efficient.
+- [x] **AI-3.10** Add `PROACTIVE_PROMPT_TEMPLATE` string constant to
+       `core/prompts.py` exactly as specified in the prompt section above.
+- [x] **AI-3.11** Add `build_proactive_prompt(context_lines: list[str],
+       utc_time: str) -> str` to `core/prompts.py`. Formats `context` as
+       `"\n".join(context_lines)` and `context_size` as `len(context_lines)`.
+
+**F — Brain**
+
+- [x] **AI-3.12** Add `TARSBrain.post_proactively(chat_id: int) -> str | None`
+       to `core/brain.py`:
+       - Calls `get_recent_messages(chat_id, PROACTIVE_CONTEXT_MESSAGES)`.
+       - If `len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES`: returns `None` (no LLM
+         call — not enough context).
+       - Formats `context_lines = [f"{r['first_name']}: {r['text']}" for r in rows]`.
+       - Computes `utc_time` from `datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")`.
+       - Calls `build_proactive_prompt(context_lines, utc_time)`.
+       - Calls `_call_llm(MODEL_TEXT, messages=[{"role":"system","content":prompt}],
+         temperature=0.85, max_tokens=200, top_p=0.95)`.
+       - Parses JSON with `_parse_json_safe(raw)`, extracts `reply` field.
+       - On success: calls `memory.add_chat_memory(chat_id, user_id=0,
+         user_msg="", bot_reply=reply)` so the proactive post appears in
+         TARS's own context for future triggered replies. Returns `reply`.
+       - On any error: logs and returns `None`.
+
+**G — Background service**
+
+- [x] **AI-3.13** Create `services/background_service.py` with two public
+       functions: `start_cleanup_loop(interval_seconds) -> threading.Thread` and
+       `start_proactive_loop(bot, allowed_chat_ids, engine, interval_seconds)
+       -> threading.Thread`. Both start their thread as a daemon before returning.
+- [x] **AI-3.14** Implement the cleanup loop body in `start_cleanup_loop`:
+       call `purge_expired_messages(MESSAGE_TTL_SECONDS)`, log the result as
+       `f"Cleanup: purged {n} expired messages"`, then `time.sleep(interval_seconds)`.
+       Wrap in `try/except Exception` to protect the thread from transient DB errors.
+- [x] **AI-3.15** Implement the proactive loop body in `start_proactive_loop`:
+       iterate `allowed_chat_ids`; for each chat call `engine.should_post(chat_id)`;
+       on `True` call `brain.post_proactively(chat_id)` in a `try/except`; on a
+       non-`None` return value send via `bot.send_message(chat_id, reply)` and call
+       `engine.record_post(chat_id)`; on `None` or exception reschedule without
+       consuming budget. After iterating all chats, sleep `interval_seconds`.
+
+**H — Startup wiring**
+
+- [x] **AI-3.16** In `main.py`, after `bot = init_bot()`, add:
+       ```python
+       if PROACTIVE_ENABLED:
+           from core.proactive_engine import proactive_engine
+           from services.background_service import start_cleanup_loop, start_proactive_loop
+           from config.settings import (
+               CLEANUP_LOOP_INTERVAL_SECONDS, PROACTIVE_LOOP_INTERVAL_SECONDS,
+               PROACTIVE_CHAT_IDS,
+           )
+           start_cleanup_loop(CLEANUP_LOOP_INTERVAL_SECONDS)
+           start_proactive_loop(
+               bot, PROACTIVE_CHAT_IDS, proactive_engine,
+               PROACTIVE_LOOP_INTERVAL_SECONDS
+           )
+       ```
+       Note that `PROACTIVE_CHAT_IDS` — not `ALLOWED_CHAT_IDS` — is passed to
+       `start_proactive_loop`. The proactive loop must never attempt to post into
+       a chat that is not explicitly enrolled, even if TARS is authorized to reply
+       there. The `PROACTIVE_ENABLED` guard means the entire feature can be toggled
+       off via `.env` with zero code changes.

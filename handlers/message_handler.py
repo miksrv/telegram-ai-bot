@@ -15,7 +15,13 @@ from core.memory import memory
 from utils.photo import extract_photo_url
 from utils.identity import extract_telegram_identity
 from utils.triggers import is_calling_tars, is_reply_to_bot
-from config.settings import ADMIN_IDS
+from config.settings import (
+    ADMIN_IDS,
+    PROACTIVE_CHAT_IDS,
+    PROACTIVE_MIN_WORD_COUNT,
+    PROACTIVE_MIN_CHAR_COUNT,
+)
+from database.db import save_message, ensure_user_profile_exists
 
 # Global cooldown dictionary imported from cooldown module
 from core.cooldown import cooldowns
@@ -64,6 +70,35 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     if random.random() < 0.05:
         memory.cleanup()
         cooldowns.cleanup()
+
+    # --- Observe: save qualifying text messages for proactive context ---
+    if (
+        chat_id in PROACTIVE_CHAT_IDS
+        and message.content_type == "text"
+        and text_content
+        and not text_content.startswith("/")
+        and (
+            len(text_content.split()) >= PROACTIVE_MIN_WORD_COUNT
+            or len(text_content) >= PROACTIVE_MIN_CHAR_COUNT
+        )
+    ):
+        try:
+            save_message(
+                chat_id=chat_id,
+                user_id=user_id,
+                telegram_message_id=message.message_id,
+                first_name=message.from_user.first_name or "",
+                username=message.from_user.username or "",
+                text=text_content,
+            )
+            ensure_user_profile_exists(
+                user_id=user_id,
+                first_name=message.from_user.first_name or "",
+                last_name=message.from_user.last_name or "",
+                username=message.from_user.username or "",
+            )
+        except Exception as e:
+            logging.error(f"Observe error: {e}")
 
     # --- Extract text and photo ---
     photo_url, caption = extract_photo_url(bot, message)
