@@ -38,6 +38,9 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # --- Extract text ---
     text_content = message.text or message.caption or ""
 
+    if not text_content.strip():
+        return
+
     # --- Check triggers and replies ---
     has_trigger = is_calling_tars(text_content)
     is_reply = is_reply_to_bot(bot, message)

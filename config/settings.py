@@ -8,15 +8,6 @@ load_dotenv()
 
 
 # --------------------------------------------------
-# Logging
-# --------------------------------------------------
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-# --------------------------------------------------
 # Helpers
 # --------------------------------------------------
 
@@ -102,7 +93,11 @@ ALLOWED_COMMANDS = {
 # --------------------------------------------------
 
 PROACTIVE_ENABLED             = os.getenv("PROACTIVE_ENABLED", "true").lower() == "true"
-PROACTIVE_CHAT_IDS            = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", "")) & ALLOWED_CHAT_IDS
+_proactive_parsed             = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", ""))
+PROACTIVE_CHAT_IDS            = _proactive_parsed & ALLOWED_CHAT_IDS
+_dropped                      = _proactive_parsed - ALLOWED_CHAT_IDS
+if _dropped:
+    logging.warning("Proactive chat IDs not in ALLOWED_CHAT_IDS (ignored): %s", _dropped)
 PROACTIVE_MAX_PER_DAY         = int(os.getenv("PROACTIVE_MAX_PER_DAY", "5"))
 PROACTIVE_MIN_GAP_SECONDS     = int(os.getenv("PROACTIVE_MIN_GAP_SECONDS", "3600"))
 PROACTIVE_NEXT_MIN_SECONDS    = int(os.getenv("PROACTIVE_NEXT_MIN_SECONDS", "7200"))

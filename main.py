@@ -47,7 +47,8 @@ if __name__ == "__main__":
     logging.info("TARS v1.1 Systems Online")
     logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
 
-    start_mqtt(background=True)
+    if not start_mqtt(background=True):
+        logging.warning("MQTT unavailable — /status and /photo commands will not work")
 
     bot = init_bot()
 

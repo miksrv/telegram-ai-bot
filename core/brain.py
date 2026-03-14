@@ -116,7 +116,7 @@ class TARSBrain:
             return reply
 
         except Exception as e:
-            logging.error(f"Text gen error: {e}")
+            logging.exception(f"Text gen error: {e}")
             return "Сбой логического модуля. Пожалуйста, попробуйте позже."
 
 
@@ -174,7 +174,7 @@ class TARSBrain:
             return reply
 
         except Exception as e:
-            logging.error(f"Vision error: {e}")
+            logging.exception(f"Vision error: {e}")
             return "Ошибка визуального модуля"
 
 
@@ -312,7 +312,7 @@ class TARSBrain:
             return reply
 
         except Exception as e:
-            logging.error(f"post_proactively error (chat={chat_id}): {e}")
+            logging.exception(f"post_proactively error (chat={chat_id}): {e}")
             return None
 
     # --------------------------------------------------

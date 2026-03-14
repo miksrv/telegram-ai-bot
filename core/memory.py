@@ -1,4 +1,5 @@
 import time
+import threading
 from collections import deque
 from typing import Dict, Deque, Tuple
 
@@ -31,6 +32,7 @@ class MemoryManager:
     # --------------------------------------------------
 
     def __init__(self):
+        self._lock = threading.Lock()
         self.chat_storage: Dict[int, Dict] = {}
         self.user_storage: Dict[int, Dict] = {}
         self._load()
@@ -54,15 +56,17 @@ class MemoryManager:
     # ==================================================
 
     def get_chat_context(self, chat_id: int) -> str:
-        if chat_id not in self.chat_storage:
-            return ""
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                return ""
 
-        self.chat_storage[chat_id]["last_access"] = time.time()
+            self.chat_storage[chat_id]["last_access"] = time.time()
 
-        history: Deque[ChatHistoryEntry] = self.chat_storage[chat_id]["history"]
+            history: Deque[ChatHistoryEntry] = self.chat_storage[chat_id]["history"]
+            snapshot = list(history)[-MAX_CONTEXT_MESSAGES:]
 
         lines = []
-        for user_id, role, text in list(history)[-MAX_CONTEXT_MESSAGES:]:
+        for user_id, role, text in snapshot:
             speaker = f"User#{user_id}" if role == "user" else "TARS"
             lines.append(f"{speaker}: {text}")
 
@@ -75,32 +79,35 @@ class MemoryManager:
             user_msg: str,
             bot_reply: str,
     ):
-        if chat_id not in self.chat_storage:
-            self.chat_storage[chat_id] = {
-                "last_access": time.time(),
-                "history": deque(maxlen=MEMORY_LIMIT),
-            }
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                self.chat_storage[chat_id] = {
+                    "last_access": time.time(),
+                    "history": deque(maxlen=MEMORY_LIMIT),
+                }
 
-        store = self.chat_storage[chat_id]
-        store["last_access"] = time.time()
+            store = self.chat_storage[chat_id]
+            store["last_access"] = time.time()
 
-        store["history"].append((user_id, "user", user_msg))
-        store["history"].append((user_id, "assistant", bot_reply))
+            store["history"].append((user_id, "user", user_msg))
+            store["history"].append((user_id, "assistant", bot_reply))
 
     # ==================================================
     # USER CONTEXT
     # ==================================================
 
     def get_user_context(self, user_id: int) -> str:
-        if user_id not in self.user_storage:
-            return ""
+        with self._lock:
+            if user_id not in self.user_storage:
+                return ""
 
-        self.user_storage[user_id]["last_access"] = time.time()
+            self.user_storage[user_id]["last_access"] = time.time()
 
-        history: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
+            history: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
+            snapshot = list(history)[-5:]
 
         lines = []
-        for role, text in list(history)[-5:]:
+        for role, text in snapshot:
             speaker = "User" if role == "user" else "TARS"
             lines.append(f"{speaker}: {text}")
 
@@ -112,30 +119,32 @@ class MemoryManager:
             user_msg: str,
             bot_reply: str,
     ):
-        if user_id not in self.user_storage:
-            self.user_storage[user_id] = {
-                "last_access": time.time(),
-                "history": deque(maxlen=20),
-            }
+        with self._lock:
+            if user_id not in self.user_storage:
+                self.user_storage[user_id] = {
+                    "last_access": time.time(),
+                    "history": deque(maxlen=20),
+                }
 
-        hist: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
+            hist: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
 
-        self.user_storage[user_id]["last_access"] = time.time()
+            self.user_storage[user_id]["last_access"] = time.time()
 
-        hist.append(("user", user_msg))
-        hist.append(("assistant", bot_reply))
+            hist.append(("user", user_msg))
+            hist.append(("assistant", bot_reply))
 
     # ==================================================
     # STATS
     # ==================================================
 
     def get_stats(self, chat_id: int):
-        if chat_id not in self.chat_storage:
-            return 0, 0
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                return 0, 0
 
-        total = len(self.chat_storage[chat_id]["history"])
-        used = min(total, MAX_CONTEXT_MESSAGES)
-        return used, total
+            total = len(self.chat_storage[chat_id]["history"])
+            used = min(total, MAX_CONTEXT_MESSAGES)
+            return used, total
 
     # ==================================================
     # CLEANUP
@@ -143,7 +152,8 @@ class MemoryManager:
 
     def flush(self):
         """Persists current in-RAM state to SQLite. Called on shutdown."""
-        flush_memory(self.chat_storage, self.user_storage)
+        with self._lock:
+            flush_memory(self.chat_storage, self.user_storage)
 
     def cleanup(self):
         """
@@ -152,21 +162,22 @@ class MemoryManager:
         """
         now = time.time()
 
-        expired = [
-            cid for cid, data in self.chat_storage.items()
-            if now - data["last_access"] > MEMORY_TTL_SECONDS
-        ]
+        with self._lock:
+            expired = [
+                cid for cid, data in self.chat_storage.items()
+                if now - data["last_access"] > MEMORY_TTL_SECONDS
+            ]
 
-        for cid in expired:
-            del self.chat_storage[cid]
+            for cid in expired:
+                del self.chat_storage[cid]
 
-        expired_users = [
-            uid for uid, data in self.user_storage.items()
-            if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
-        ]
+            expired_users = [
+                uid for uid, data in self.user_storage.items()
+                if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
+            ]
 
-        for uid in expired_users:
-            del self.user_storage[uid]
+            for uid in expired_users:
+                del self.user_storage[uid]
 
     # ==================================================
     # DEBUG

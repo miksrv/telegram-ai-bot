@@ -1,4 +1,5 @@
 import time
+import threading
 from typing import Dict, Deque
 from collections import deque
 
@@ -28,6 +29,8 @@ class CooldownManager:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
+
         # Last accepted message timestamp (classic cooldown)
         self._last_action: Dict[int, float] = {}
 
@@ -43,32 +46,33 @@ class CooldownManager:
     def allowed(self, user_id: int) -> bool:
         now = time.time()
 
-        # ----- Check penalty cooldown -----
-        penalty = self._penalty_until.get(user_id)
-        if penalty and now < penalty:
-            return False
+        with self._lock:
+            # ----- Check penalty cooldown -----
+            penalty = self._penalty_until.get(user_id)
+            if penalty and now < penalty:
+                return False
 
-        # ----- Classic cooldown -----
-        last = self._last_action.get(user_id, 0)
-        if now - last < USER_COOLDOWN_SECONDS:
-            return False
+            # ----- Classic cooldown -----
+            last = self._last_action.get(user_id, 0)
+            if now - last < USER_COOLDOWN_SECONDS:
+                return False
 
-        # ----- Sliding window rate limiting -----
-        window = self._windows.setdefault(user_id, deque())
+            # ----- Sliding window rate limiting -----
+            window = self._windows.setdefault(user_id, deque())
 
-        # Remove timestamps outside window
-        while window and now - window[0] > RATE_LIMIT_WINDOW:
-            window.popleft()
+            # Remove timestamps outside window
+            while window and now - window[0] > RATE_LIMIT_WINDOW:
+                window.popleft()
 
-        # If limit exceeded → apply penalty
-        if len(window) >= RATE_LIMIT_COUNT:
-            self._penalty_until[user_id] = now + RATE_LIMIT_PENALTY
-            return False
+            # If limit exceeded → apply penalty
+            if len(window) >= RATE_LIMIT_COUNT:
+                self._penalty_until[user_id] = now + RATE_LIMIT_PENALTY
+                return False
 
-        # Record accepted action
-        window.append(now)
-        self._last_action[user_id] = now
-        return True
+            # Record accepted action
+            window.append(now)
+            self._last_action[user_id] = now
+            return True
 
     # --------------------------------------------------
     # Forcefully set cooldown
@@ -77,7 +81,8 @@ class CooldownManager:
         """
         Forces classic cooldown reset.
         """
-        self._last_action[user_id] = time.time()
+        with self._lock:
+            self._last_action[user_id] = time.time()
 
     # --------------------------------------------------
     # Cleanup old records
@@ -93,25 +98,26 @@ class CooldownManager:
         expire_window = RATE_LIMIT_WINDOW * 3
         expire_cooldown = USER_COOLDOWN_SECONDS * 3
 
-        # Clean classic cooldowns
-        for uid in list(self._last_action.keys()):
-            if now - self._last_action[uid] > expire_cooldown:
-                del self._last_action[uid]
+        with self._lock:
+            # Clean classic cooldowns
+            for uid in list(self._last_action.keys()):
+                if now - self._last_action[uid] > expire_cooldown:
+                    del self._last_action[uid]
 
-        # Clean windows
-        for uid in list(self._windows.keys()):
-            window = self._windows[uid]
+            # Clean windows
+            for uid in list(self._windows.keys()):
+                window = self._windows[uid]
 
-            while window and now - window[0] > expire_window:
-                window.popleft()
+                while window and now - window[0] > expire_window:
+                    window.popleft()
 
-            if not window:
-                del self._windows[uid]
+                if not window:
+                    del self._windows[uid]
 
-        # Clean penalties
-        for uid in list(self._penalty_until.keys()):
-            if now > self._penalty_until[uid]:
-                del self._penalty_until[uid]
+            # Clean penalties
+            for uid in list(self._penalty_until.keys()):
+                if now > self._penalty_until[uid]:
+                    del self._penalty_until[uid]
 
     # --------------------------------------------------
     # Debug stats

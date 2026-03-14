@@ -4,6 +4,7 @@ All user profile logic is centralized.
 """
 
 import json
+import os
 import sqlite3
 import time
 import logging
@@ -24,6 +25,7 @@ def get_connection() -> sqlite3.Connection:
 # ==========================================================
 
 def _init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = get_connection()
     try:
         conn.execute("""
@@ -174,9 +176,11 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     avg_rudeness = (profile["avg_rudeness"] * profile["message_count"] + profile_update.get("rudeness", 0)) / count
     avg_verbosity = (profile["avg_verbosity"] * profile["message_count"] + profile_update.get("verbosity", 0.5)) / count
 
-    # Combine unique interests
-    new_interests = set(profile["interests"]) | set(profile_update.get("interests", []))
-    interests_str = ",".join(new_interests)
+    # Combine unique interests, capped at 20 entries
+    existing = set(profile["interests"])
+    incoming = set(profile_update.get("interests", []))
+    merged = list(existing | incoming)[:20]
+    interests_str = ",".join(merged)
 
     with get_connection() as conn:
         cursor = conn.cursor()

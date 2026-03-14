@@ -27,7 +27,10 @@ def get_weather(city: str) -> str:
     feels = data["main"]["feels_like"]
     description = data["weather"][0]["description"]
     humidity = data["main"]["humidity"]
-    wind = data["wind"]["speed"]
+    wind_speed = data.get("wind", {}).get("speed", "н/д")
+    pressure = data["main"].get("pressure", "н/д")
+    visibility = data.get("visibility", "н/д")
+    clouds = data.get("clouds", {}).get("all", "н/д")
 
     return (
         f"🌤 Погода {city}:\n\n"
@@ -35,8 +38,8 @@ def get_weather(city: str) -> str:
         f"Ощущается как: {feels}°C\n"
         f"Состояние: {description}\n"
         f"Влажность: {humidity}%\n"
-        f"Ветер: {wind} м/с\n"
-        f"Давление: {data['main']['pressure']} гПа\n"
-        f"Видимость: {data['visibility']} м\n"
-        f"Облачность: {data['clouds']['all']}%"
+        f"Ветер: {wind_speed} м/с\n"
+        f"Давление: {pressure} гПа\n"
+        f"Видимость: {visibility} м\n"
+        f"Облачность: {clouds}%"
     )

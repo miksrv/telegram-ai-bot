@@ -7,7 +7,8 @@ State resets on restart (the daily cap is a UX constraint, not a safety invarian
 import time
 import random
 import calendar
-from datetime import date, timedelta
+import threading
+from datetime import datetime, timedelta, timezone
 
 from config.settings import (
     PROACTIVE_MAX_PER_DAY,
@@ -21,7 +22,7 @@ from database.db import get_recent_messages
 
 def _next_utc_midnight() -> int:
     """Returns the Unix timestamp of the next UTC midnight."""
-    tomorrow = date.today() + timedelta(days=1)
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
     return calendar.timegm(tomorrow.timetuple())
 
 
@@ -37,6 +38,7 @@ class ProactiveEngine:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._state: dict[int, dict] = {}
 
     # --------------------------------------------------
@@ -45,20 +47,21 @@ class ProactiveEngine:
 
     def should_post(self, chat_id: int) -> bool:
         """Returns True only when all posting conditions are satisfied."""
-        self._init_chat(chat_id)
-        self._reset_day_if_needed(chat_id)
+        with self._lock:
+            self._init_chat(chat_id)
+            self._reset_day_if_needed(chat_id)
 
-        s = self._state[chat_id]
-        now = time.time()
+            s = self._state[chat_id]
+            now = time.time()
 
-        if now < s["next_attempt_at"]:
-            return False
-        if s["count_today"] >= PROACTIVE_MAX_PER_DAY:
-            return False
-        if s["last_posted_at"] and now - s["last_posted_at"] < PROACTIVE_MIN_GAP_SECONDS:
-            return False
+            if now < s["next_attempt_at"]:
+                return False
+            if s["count_today"] >= PROACTIVE_MAX_PER_DAY:
+                return False
+            if s["last_posted_at"] and now - s["last_posted_at"] < PROACTIVE_MIN_GAP_SECONDS:
+                return False
 
-        # Require enough context rows in the DB
+        # Require enough context rows in the DB (outside lock to avoid blocking)
         rows = get_recent_messages(chat_id, PROACTIVE_MIN_CONTEXT_MESSAGES)
         if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
             return False
@@ -67,18 +70,20 @@ class ProactiveEngine:
 
     def record_post(self, chat_id: int):
         """Called after a successful proactive send."""
-        self._init_chat(chat_id)
-        s = self._state[chat_id]
-        now = time.time()
+        with self._lock:
+            self._init_chat(chat_id)
+            s = self._state[chat_id]
+            now = time.time()
 
-        s["count_today"] += 1
-        s["last_posted_at"] = now
-        self._schedule_next(chat_id)
+            s["count_today"] += 1
+            s["last_posted_at"] = now
+            self._schedule_next(chat_id)
 
     def reschedule_failed(self, chat_id: int):
         """Called when LLM failed — advances next_attempt_at without consuming budget."""
-        self._init_chat(chat_id)
-        self._state[chat_id]["next_attempt_at"] = time.time() + PROACTIVE_NEXT_MIN_SECONDS
+        with self._lock:
+            self._init_chat(chat_id)
+            self._state[chat_id]["next_attempt_at"] = time.time() + PROACTIVE_NEXT_MIN_SECONDS
 
     # --------------------------------------------------
     # Internal helpers

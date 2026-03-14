@@ -26,7 +26,7 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
                 n = purge_expired_messages(MESSAGE_TTL_SECONDS)
                 logger.info(f"Cleanup: purged {n} expired messages")
             except Exception as e:
-                logger.error(f"Cleanup loop error: {e}")
+                logger.exception(f"Cleanup loop error: {e}")
             time.sleep(interval_seconds)
 
     t = threading.Thread(target=_loop, name="cleanup-loop", daemon=True)
@@ -66,7 +66,7 @@ def start_proactive_loop(
                         )
 
                 except Exception as e:
-                    logger.error(f"Proactive loop error (chat={chat_id}): {e}")
+                    logger.exception(f"Proactive loop error (chat={chat_id}): {e}")
                     try:
                         engine.reschedule_failed(chat_id)
                     except Exception:
