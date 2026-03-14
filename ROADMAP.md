@@ -2,24 +2,6 @@
 
 ## Bugs
 
-### Medium
-
-**[BUG-4] `is_reply_to_bot` calls `bot.get_me()` on every message**
-`utils/triggers.py` calls `bot.get_me()` for every incoming message to obtain the bot's own user ID. This issues an HTTP request to the Telegram API on every single message.
-Fix: cache the bot ID once at startup (e.g., call `bot.get_me()` in `init_bot` and store `bot.bot_id`).
-
-**[BUG-5] `user_storage` in `MemoryManager` is never cleaned up**
-`MemoryManager.cleanup()` only evicts expired `chat_storage` entries. `user_storage` grows unboundedly for the lifetime of the process, one entry per user who ever messaged the bot.
-Fix: add TTL-based eviction for `user_storage` using the same `MEMORY_TTL_SECONDS` mechanism.
-
-**[BUG-6] `CooldownManager.cleanup()` is never called**
-`message_handler.py` calls `memory.cleanup()` with 5% probability, but never calls `cooldowns.cleanup()`. The cooldown dictionaries (`_last_action`, `_windows`, `_penalty_until`) accumulate stale entries indefinitely.
-Fix: call `cooldowns.cleanup()` in the same block as `memory.cleanup()`.
-
-**[BUG-7] `/photo` command missing group chat authorization check**
-`photo_handler.handle_photo` only blocks private-chat non-admins. It does not check whether the message originates from an allowed group chat (`ALLOWED_CHAT_IDS`). Any user in any group chat can issue `/photo`.
-Fix: add the same `chat_id not in allowed_chat_ids` guard used in `status_handler`.
-
 ### Low
 
 **[BUG-8] Duplicate `{user_profile_summary}` in system prompt**

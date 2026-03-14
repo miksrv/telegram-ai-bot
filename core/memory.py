@@ -78,6 +78,8 @@ class MemoryManager:
         if user_id not in self.user_storage:
             return ""
 
+        self.user_storage[user_id]["last_access"] = time.time()
+
         history: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
 
         lines = []
@@ -95,10 +97,13 @@ class MemoryManager:
     ):
         if user_id not in self.user_storage:
             self.user_storage[user_id] = {
-                "history": deque(maxlen=20)
+                "last_access": time.time(),
+                "history": deque(maxlen=20),
             }
 
         hist: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
+
+        self.user_storage[user_id]["last_access"] = time.time()
 
         hist.append(("user", user_msg))
         hist.append(("assistant", bot_reply))
@@ -133,6 +138,14 @@ class MemoryManager:
 
         for cid in expired:
             del self.chat_storage[cid]
+
+        expired_users = [
+            uid for uid, data in self.user_storage.items()
+            if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
+        ]
+
+        for uid in expired_users:
+            del self.user_storage[uid]
 
     # ==================================================
     # DEBUG

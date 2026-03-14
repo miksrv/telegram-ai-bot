@@ -25,11 +25,13 @@ def is_calling_tars(text: str) -> bool:
 def is_reply_to_bot(bot: TeleBot, message: types.Message) -> bool:
     """
     Checks if the message is a reply to the bot.
+    Uses bot.bot_id cached at startup to avoid a Telegram API call per message.
     """
+    bot_id = getattr(bot, "bot_id", None) or bot.get_me().id
     return (
             message.reply_to_message is not None and
             message.reply_to_message.from_user is not None and
-            message.reply_to_message.from_user.id == bot.get_me().id
+            message.reply_to_message.from_user.id == bot_id
     )
 
 def add_trigger(new_trigger: str, triggers_set: Set[str] = TRIGGERS):

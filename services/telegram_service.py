@@ -16,6 +16,7 @@ def init_bot() -> TeleBot:
     Initializes the TeleBot instance and registers handlers.
     """
     bot = TeleBot(BOT_TOKEN, parse_mode=None)
+    bot.bot_id = bot.get_me().id  # Cache bot ID once at startup
 
     # --- Status command handler ---
     @bot.message_handler(commands=["status"])

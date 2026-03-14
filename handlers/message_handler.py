@@ -60,9 +60,10 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             logging.info(f"Blocked UNAUTHORIZED | user={user_id} chat={chat_id}")
         return
 
-    # Periodic cleanup of memory (5% chance per message)
+    # Periodic cleanup of memory and cooldowns (5% chance per message)
     if random.random() < 0.05:
         memory.cleanup()
+        cooldowns.cleanup()
 
     # --- Extract text and photo ---
     photo_url, caption = extract_photo_url(bot, message)

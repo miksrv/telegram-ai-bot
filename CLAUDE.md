@@ -116,4 +116,3 @@ See `ROADMAP.md` for a full list of bugs and planned improvements.
 - `database/db.py` uses a global shared SQLite cursor that is not thread-safe — concurrent writes from different threads can race
 - `status_handler` and `photo_handler` block the Telegram polling thread for up to 30–45s, preventing other messages from being handled during that window
 - The MQTT message queue is shared — concurrent `/status` or `/photo` requests from multiple users can steal each other's responses
-- `user_storage` in `MemoryManager.cleanup()` is never purged and grows unbounded
