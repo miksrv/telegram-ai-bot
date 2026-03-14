@@ -1,27 +1,5 @@
 # TARS Roadmap
 
-## Bugs
-
-### Low
-
-**[BUG-8] Duplicate `{user_profile_summary}` in system prompt**
-`core/prompts.py` `GENERAL_PROMPT_TEMPLATE` inserts `{user_profile_summary}` twice: once under "Adaptive behavior directives" and again under "User profile". The profile summary is sent to the LLM twice every request, wasting tokens.
-Fix: remove one of the two occurrences.
-
-**[BUG-9] `TRIGGERS` set in `config/settings.py` is dead code**
-`config/settings.py` defines a `TRIGGERS` set that is never imported anywhere. `utils/triggers.py` maintains its own independent copy. The settings constant serves no purpose.
-Fix: remove `TRIGGERS` from `settings.py`, or import from there into `triggers.py`.
-
-**[BUG-10] `ProfileRepository` class is unused**
-`database/profile_repo.py` defines a `ProfileRepository` class with static methods. `brain.py` imports the underlying db functions directly (via `from database.profile_repo import db_get_user_profile...`), bypassing the class entirely. The class is dead code.
-Fix: either use `ProfileRepository` consistently in `brain.py`, or remove the class and keep only the function re-exports.
-
-**[BUG-11] `get_connection()` docstring says "Singleton" but creates a new connection each call**
-The function comment is misleading. The actual singleton is the module-level `conn` variable.
-Fix: correct the docstring.
-
----
-
 ## Improvements
 
 ### Reliability

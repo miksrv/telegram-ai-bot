@@ -17,7 +17,7 @@ core/
   cooldown.py                    # CooldownManager: sliding window rate limiter
 database/
   db.py                          # SQLite: user_profile table, CRUD operations
-  profile_repo.py                # ProfileRepository wrapper (currently unused in practice)
+  profile_repo.py                # Re-exports db.py functions used by brain.py
 handlers/
   message_handler.py             # Main message routing: trigger detection, cooldowns, dispatch
   status_handler.py              # /status: requests CubeSat telemetry via MQTT, waits for reply

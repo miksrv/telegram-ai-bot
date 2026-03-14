@@ -53,9 +53,6 @@ Conversation context (for understanding only, not to repeat):
 Telegram user identity:
 {identity}
 
-User profile:
-{user_profile_summary}
-
 User message:
 {message}
 """
