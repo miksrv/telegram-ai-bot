@@ -3,10 +3,11 @@ TARS database module.
 All user profile logic is centralized.
 """
 
+import json
 import sqlite3
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from config.settings import DB_PATH
 
 # ==========================================================
@@ -40,6 +41,20 @@ def _init_db():
                 interests TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
                 last_updated INTEGER
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_memory (
+                chat_id INTEGER PRIMARY KEY,
+                last_access REAL,
+                history_json TEXT
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                user_id INTEGER PRIMARY KEY,
+                last_access REAL,
+                history_json TEXT
             );
         """)
         conn.commit()
@@ -196,6 +211,80 @@ def update_user_notes(user_id: int, new_info: str):
             """, (new_info, int(time.time()), user_id))
 
         conn.commit()
+
+
+# ==========================================================
+# MEMORY PERSISTENCE
+# ==========================================================
+
+def flush_memory(chat_storage: dict, user_storage: dict):
+    """
+    Writes the current in-RAM MemoryManager state to SQLite so it
+    survives restarts.  Called by the shutdown handler.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_memory")
+        for chat_id, data in chat_storage.items():
+            conn.execute(
+                "INSERT INTO chat_memory(chat_id, last_access, history_json) VALUES (?, ?, ?)",
+                (chat_id, data["last_access"], json.dumps(list(data["history"]))),
+            )
+
+        conn.execute("DELETE FROM user_memory")
+        for user_id, data in user_storage.items():
+            conn.execute(
+                "INSERT INTO user_memory(user_id, last_access, history_json) VALUES (?, ?, ?)",
+                (user_id, data["last_access"], json.dumps(list(data["history"]))),
+            )
+
+        conn.commit()
+        logging.info(
+            f"Memory flushed: {len(chat_storage)} chats, {len(user_storage)} users"
+        )
+    except Exception as e:
+        logging.error(f"Failed to flush memory: {e}")
+    finally:
+        conn.close()
+
+
+def load_memory() -> Tuple[dict, dict]:
+    """
+    Reads persisted chat and user history from SQLite.
+    Returns (chat_data, user_data) suitable for reconstructing
+    MemoryManager storage.  Returns empty dicts on any error.
+    """
+    chat_data: dict = {}
+    user_data: dict = {}
+    conn = get_connection()
+    try:
+        for row in conn.execute(
+            "SELECT chat_id, last_access, history_json FROM chat_memory"
+        ):
+            chat_id, last_access, history_json = row
+            chat_data[chat_id] = {
+                "last_access": last_access,
+                "history": [tuple(e) for e in json.loads(history_json)],
+            }
+
+        for row in conn.execute(
+            "SELECT user_id, last_access, history_json FROM user_memory"
+        ):
+            user_id, last_access, history_json = row
+            user_data[user_id] = {
+                "last_access": last_access,
+                "history": [tuple(e) for e in json.loads(history_json)],
+            }
+
+        logging.info(
+            f"Memory loaded: {len(chat_data)} chats, {len(user_data)} users"
+        )
+    except Exception as e:
+        logging.error(f"Failed to load memory: {e}")
+    finally:
+        conn.close()
+
+    return chat_data, user_data
 
 
 # ==========================================================

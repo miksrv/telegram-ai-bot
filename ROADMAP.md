@@ -341,19 +341,6 @@ within the correct conversational scope.
 
 ## Improvements
 
-### Reliability
-
-**[IMP-1] Persistent memory across restarts**
-`MemoryManager` is RAM-only. All conversation context is lost when the bot restarts. For a long-running community bot, this breaks conversational continuity.
-Options: periodically flush chat/user history to SQLite, or use Redis.
-
-**[IMP-2] MQTT reconnect strategy**
-`on_disconnect` calls `client.reconnect()` after a 5-second sleep, but this runs inside the paho callback thread and can cause issues if reconnection fails repeatedly. A proper exponential backoff loop with a maximum retry count would be more robust.
-
-**[IMP-3] Graceful shutdown should close DB and MQTT**
-`main.py` catches `SIGINT`/`SIGTERM` but only calls `sys.exit(0)`. The SQLite connection and MQTT client are not explicitly closed. `database/db.py` even defines `close_connection()` but it is never called.
-Fix: call `close_connection()` and `mqtt_client.disconnect()` in the shutdown handler.
-
 ### Features
 
 **[IMP-4] `/status` and `/photo` progress feedback**

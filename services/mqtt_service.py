@@ -87,9 +87,30 @@ def on_message(client, userdata, msg):
 
 
 def on_disconnect(client, userdata, rc):
-    logger.warning(f"Disconnected from MQTT, rc={rc}. Reconnecting...")
-    time.sleep(5)
-    client.reconnect()
+    if rc == 0:
+        return  # intentional disconnect from stop_mqtt(); do not reconnect
+    logger.warning(f"Disconnected from MQTT (rc={rc}). Starting reconnect loop...")
+
+    def _reconnect_loop():
+        delay = 5
+        max_delay = 300  # cap at 5 minutes
+        max_retries = 10
+        for attempt in range(1, max_retries + 1):
+            time.sleep(delay)
+            try:
+                client.reconnect()
+                logger.info(f"Reconnected to MQTT broker (attempt {attempt})")
+                return
+            except Exception as e:
+                next_delay = min(delay * 2, max_delay)
+                logger.warning(
+                    f"MQTT reconnect attempt {attempt}/{max_retries} failed: {e}. "
+                    f"Retrying in {next_delay}s"
+                )
+                delay = next_delay
+        logger.error("MQTT reconnect exhausted all retries, giving up")
+
+    threading.Thread(target=_reconnect_loop, daemon=True).start()
 
 
 def start_mqtt(background=True):
@@ -112,6 +133,15 @@ def start_mqtt(background=True):
         mqtt_client.loop_forever()
 
     return True
+
+
+def stop_mqtt():
+    """Cleanly disconnects the MQTT client. Safe to call from the shutdown handler."""
+    try:
+        mqtt_client.disconnect()
+        logger.info("MQTT client disconnected")
+    except Exception as e:
+        logger.error(f"Error disconnecting MQTT: {e}")
 
 
 def send_command(command: dict, topic: str = "cubesat/command") -> bool:

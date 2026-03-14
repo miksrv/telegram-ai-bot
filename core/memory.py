@@ -7,6 +7,7 @@ from config.settings import (
     MEMORY_LIMIT,
     MEMORY_TTL_SECONDS,
 )
+from database.db import flush_memory, load_memory
 
 
 ChatHistoryEntry = Tuple[int, str, str]   # (user_id, role, text)
@@ -21,7 +22,8 @@ class MemoryManager:
         - Chat memory (chat context)
         - User memory (personal short context)
 
-    No persistence — RAM only.
+    State is persisted to SQLite on shutdown via flush() and reloaded
+    automatically on the next startup.
     """
 
     # --------------------------------------------------
@@ -31,6 +33,21 @@ class MemoryManager:
     def __init__(self):
         self.chat_storage: Dict[int, Dict] = {}
         self.user_storage: Dict[int, Dict] = {}
+        self._load()
+
+    def _load(self):
+        """Restores chat and user history from SQLite into RAM."""
+        chat_data, user_data = load_memory()
+        for chat_id, data in chat_data.items():
+            self.chat_storage[chat_id] = {
+                "last_access": data["last_access"],
+                "history": deque(data["history"], maxlen=MEMORY_LIMIT),
+            }
+        for user_id, data in user_data.items():
+            self.user_storage[user_id] = {
+                "last_access": data["last_access"],
+                "history": deque(data["history"], maxlen=20),
+            }
 
     # ==================================================
     # CHAT CONTEXT
@@ -123,6 +140,10 @@ class MemoryManager:
     # ==================================================
     # CLEANUP
     # ==================================================
+
+    def flush(self):
+        """Persists current in-RAM state to SQLite. Called on shutdown."""
+        flush_memory(self.chat_storage, self.user_storage)
 
     def cleanup(self):
         """

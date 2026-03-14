@@ -11,7 +11,7 @@ main.py                          # Entry point: starts MQTT + bot polling
 config/settings.py               # All configuration, loaded from .env
 core/
   brain.py                       # TARSBrain: LLM calls, memory/profile updates
-  memory.py                      # MemoryManager: in-RAM chat + user context
+  memory.py                      # MemoryManager: in-RAM chat + user context, flushed to SQLite on shutdown
   prompts.py                     # System prompt templates and builders
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter

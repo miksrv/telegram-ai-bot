@@ -14,11 +14,16 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from services.telegram_service import init_bot
 from config.settings import ALLOWED_CHAT_IDS
-from services.mqtt_service import start_mqtt
+from services.mqtt_service import start_mqtt, stop_mqtt
+from core.memory import memory
+from database.db import close_connection
 
 # --- Graceful shutdown handler ---
 def shutdown(signum, frame):
     logging.info("Shutting down TARS...")
+    memory.flush()
+    stop_mqtt()
+    close_connection()
     sys.exit(0)
 
 
