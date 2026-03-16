@@ -18,6 +18,7 @@ from config.settings import (
     PROACTIVE_MIN_CONTEXT_MESSAGES,
 )
 from database.db import get_recent_messages
+from core.memory import memory
 
 
 def _next_utc_midnight() -> int:
@@ -64,6 +65,10 @@ class ProactiveEngine:
         # Require enough context rows in the DB (outside lock to avoid blocking)
         rows = get_recent_messages(chat_id, PROACTIVE_MIN_CONTEXT_MESSAGES)
         if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
+            return False
+
+        # Don't post if the last chat message was already from the bot
+        if memory.last_sender_is_bot(chat_id):
             return False
 
         return True

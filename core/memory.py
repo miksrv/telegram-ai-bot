@@ -133,6 +133,16 @@ class MemoryManager:
             hist.append(("user", user_msg))
             hist.append(("assistant", bot_reply))
 
+    def last_sender_is_bot(self, chat_id: int) -> bool:
+        """Returns True if the last recorded message in the chat was from the bot."""
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                return False
+            history = self.chat_storage[chat_id]["history"]
+            if not history:
+                return False
+            return history[-1][1] == "assistant"
+
     # ==================================================
     # STATS
     # ==================================================
