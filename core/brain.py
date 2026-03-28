@@ -40,6 +40,7 @@ session = requests.Session()
 # Configure retry strategy for transient network errors
 retries = Retry(
     total=3,
+    connect=3,
     backoff_factor=1,
     status_forcelist=[500, 502, 503, 504],
 )
@@ -65,7 +66,8 @@ def post_with_retry(url, headers, payload, retries=3):
 
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError) as e:
+                requests.exceptions.ChunkedEncodingError,
+                ConnectionResetError) as e:
 
             logging.warning(f"API retry {attempt+1}/{retries}: {e}")
 
