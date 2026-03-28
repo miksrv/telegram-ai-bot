@@ -17,8 +17,7 @@ from config.settings import (
     PROACTIVE_NEXT_MAX_SECONDS,
     PROACTIVE_MIN_CONTEXT_MESSAGES,
 )
-from database.db import get_recent_messages
-from core.memory import memory
+from database.db import get_recent_messages, get_latest_message_timestamp
 
 
 def _next_utc_midnight() -> int:
@@ -62,13 +61,15 @@ class ProactiveEngine:
             if s["last_posted_at"] and now - s["last_posted_at"] < PROACTIVE_MIN_GAP_SECONDS:
                 return False
 
+            last_posted_at = s["last_posted_at"]
+
         # Require enough context rows in the DB (outside lock to avoid blocking)
         rows = get_recent_messages(chat_id, PROACTIVE_MIN_CONTEXT_MESSAGES)
         if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
             return False
 
-        # Don't post if the last chat message was already from the bot
-        if memory.last_sender_is_bot(chat_id):
+        # Don't post if there are no new user messages since the last proactive post
+        if get_latest_message_timestamp(chat_id) <= last_posted_at:
             return False
 
         return True

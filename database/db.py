@@ -352,6 +352,19 @@ def get_recent_messages(chat_id: int, limit: int) -> list:
         conn.close()
 
 
+def get_latest_message_timestamp(chat_id: int) -> int:
+    """Returns the Unix timestamp of the most recent user message in the chat, or 0 if none."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT timestamp FROM messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT 1",
+            (chat_id,)
+        ).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
 def purge_expired_messages(ttl_seconds: int) -> int:
     """Deletes messages older than ttl_seconds. Returns the number of rows deleted."""
     cutoff = int(time.time()) - ttl_seconds

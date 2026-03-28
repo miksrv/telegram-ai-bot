@@ -308,7 +308,6 @@ class TARSBrain:
             if not reply:
                 return None
 
-            memory.add_chat_memory(chat_id, user_id=0, user_msg="", bot_reply=reply)
             return reply
 
         except Exception as e:
