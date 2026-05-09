@@ -72,6 +72,17 @@ class MemoryManager:
 
         return "\n".join(lines)
 
+    def get_chat_history(self, chat_id: int) -> list:
+        """Returns the last MAX_CONTEXT_MESSAGES entries as raw (user_id, role, text) tuples."""
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                return []
+
+            self.chat_storage[chat_id]["last_access"] = time.time()
+
+            history: Deque[ChatHistoryEntry] = self.chat_storage[chat_id]["history"]
+            return list(history)[-MAX_CONTEXT_MESSAGES:]
+
     def add_chat_memory(
             self,
             chat_id: int,

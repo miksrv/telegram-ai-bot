@@ -19,7 +19,11 @@ from config.settings import (
 )
 
 from core.memory import memory
-from core.prompts import build_general_prompt, build_reply_only_prompt, get_vision_prompt, build_proactive_prompt
+from core.prompts import (
+    build_general_prompt, build_reply_only_prompt,
+    build_general_system_prompt, build_reply_only_system_prompt,
+    get_vision_prompt, build_proactive_prompt,
+)
 from core.personality_engine import PersonalityEngine
 
 from database.profile_repo import db_get_user_profile, db_update_user_profile, db_update_user_notes, db_increment_message_count
@@ -90,32 +94,23 @@ class TARSBrain:
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
-        chat_ctx, user_ctx, identity_block, profile_summary, profile = \
+        chat_history, identity_block, profile_summary, profile = \
             self._build_user_context(chat_id, user_id, identity)
 
         # Full profile update on first message (msg_count==0) and every 5th thereafter
         want_full_update = profile["message_count"] % 5 == 0
 
-        context_block = f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}"
         if want_full_update:
-            system_content = build_general_prompt(
-                context=context_block,
-                identity=identity_block,
-                profile_summary=profile_summary,
-                message=user_message,
-            )
+            system_content = build_general_system_prompt(identity_block, profile_summary)
         else:
-            system_content = build_reply_only_prompt(
-                context=context_block,
-                identity=identity_block,
-                profile_summary=profile_summary,
-                message=user_message,
-            )
+            system_content = build_reply_only_system_prompt(identity_block, profile_summary)
+
+        messages = self._build_messages_array(chat_history, user_message, system_content)
 
         try:
             reply, err = self._process_llm_response(
                 MODEL_TEXT,
-                [{"role": "system", "content": system_content}],
+                messages,
                 temperature=0.8,
                 max_tokens=800,
                 top_p=0.95,
@@ -141,14 +136,19 @@ class TARSBrain:
     def analyze_image(self, chat_id, user_id, image_url, caption, identity):
 
         try:
-            chat_ctx, user_ctx, identity_block, profile_summary, profile = \
+            chat_history, identity_block, profile_summary, profile = \
                 self._build_user_context(chat_id, user_id, identity)
 
             want_full_update = profile["message_count"] % 5 == 0
 
             vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
 
-            context_block = f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}"
+            chat_lines = [
+                f"User#{uid}: {text}" if role == "user" else f"TARS: {text}"
+                for uid, role, text in chat_history
+            ]
+            context_block = "Chat:\n" + "\n".join(chat_lines) if chat_lines else ""
+
             if want_full_update:
                 system_content = build_general_prompt(
                     context=context_block,
@@ -259,8 +259,7 @@ class TARSBrain:
     # Context building (for both text and vision)
     # --------------------------------------------------
     def _build_user_context(self, chat_id, user_id, identity):
-        chat_ctx = memory.get_chat_context(chat_id)
-        user_ctx = memory.get_user_context(user_id)
+        chat_history = memory.get_chat_history(chat_id)
 
         identity_block = (
             f"- Telegram ID: {identity.get('id')}\n"
@@ -280,7 +279,22 @@ class TARSBrain:
                 f"Notes: {profile['notes'] or 'none'}"
         )
 
-        return chat_ctx, user_ctx, identity_block, profile_summary, profile
+        return chat_history, identity_block, profile_summary, profile
+
+    # --------------------------------------------------
+    # Build proper chat completions messages array from raw chat history
+    # --------------------------------------------------
+    def _build_messages_array(self, chat_history: list, current_message: str, system_content: str) -> list:
+        messages = [{"role": "system", "content": system_content}]
+
+        for user_id, role, text in chat_history:
+            if role == "user":
+                messages.append({"role": "user", "content": f"User#{user_id}: {text}"})
+            else:
+                messages.append({"role": "assistant", "content": text})
+
+        messages.append({"role": "user", "content": current_message})
+        return messages
 
 
     # --------------------------------------------------
