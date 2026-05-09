@@ -1,14 +1,15 @@
+import base64
 import json
 import logging
 import threading
 import time
-import base64
 from io import BytesIO
 from queue import Empty
 
 from telebot import TeleBot, types
-from services.mqtt_service import send_command, register_request, unregister_request
+
 from config.settings import ADMIN_IDS
+from services.mqtt_service import register_request, send_command, unregister_request
 
 logger = logging.getLogger(__name__)
 MAX_WAIT = 45.0  # больше, чем для телеметрии — фото может дольше
@@ -23,8 +24,9 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     user_id = message.from_user.id
 
     # Проверка доступа (как в /status)
-    if (message.chat.type == "private" and user_id not in ADMIN_IDS) or \
-            (chat_id not in allowed_chat_ids and message.chat.type != "private"):
+    if (message.chat.type == "private" and user_id not in ADMIN_IDS) or (
+        chat_id not in allowed_chat_ids and message.chat.type != "private"
+    ):
         bot.reply_to(message, "Доступ запрещён.")
         return
 
@@ -39,13 +41,7 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # Register queue BEFORE sending the command to avoid missing a fast response
     q = register_request(request_id)
 
-    photo_cmd = {
-        "command": "take_photo",
-        "request_id": request_id,
-        "params": {
-            "overlay": overlay
-        }
-    }
+    photo_cmd = {"command": "take_photo", "request_id": request_id, "params": {"overlay": overlay}}
 
     if not send_command(photo_cmd, topic="cubesat/command"):
         unregister_request(request_id)
@@ -86,7 +82,7 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
                         f"Фото с CubeSat\n"
                         f"Время: {data.get('taken_at', '—')}\n"
                         f"Размер: {data.get('size_bytes', 0) // 1024} KB"
-                    )
+                    ),
                 )
 
             except json.JSONDecodeError:

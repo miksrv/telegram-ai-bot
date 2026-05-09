@@ -206,11 +206,12 @@ Telegram user identity:
 # BUILDERS
 # ==========================================================
 
+
 def build_general_prompt(
-        context: str,
-        identity: str,
-        profile_summary: str,
-        message: str,
+    context: str,
+    identity: str,
+    profile_summary: str,
+    message: str,
 ) -> str:
     """Forms the full system prompt including profile_update and notes fields."""
     return GENERAL_PROMPT_TEMPLATE.format(
@@ -222,10 +223,10 @@ def build_general_prompt(
 
 
 def build_reply_only_prompt(
-        context: str,
-        identity: str,
-        profile_summary: str,
-        message: str,
+    context: str,
+    identity: str,
+    profile_summary: str,
+    message: str,
 ) -> str:
     """Forms a lightweight system prompt that only requests a reply, no profile fields."""
     return REPLY_ONLY_PROMPT_TEMPLATE.format(

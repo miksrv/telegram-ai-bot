@@ -4,20 +4,20 @@ ProactiveEngine — per-chat state machine governing when TARS posts proactively
 State resets on restart (the daily cap is a UX constraint, not a safety invariant).
 """
 
-import time
-import random
 import calendar
+import random
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from config.settings import (
     PROACTIVE_MAX_PER_DAY,
-    PROACTIVE_MIN_GAP_SECONDS,
-    PROACTIVE_NEXT_MIN_SECONDS,
-    PROACTIVE_NEXT_MAX_SECONDS,
     PROACTIVE_MIN_CONTEXT_MESSAGES,
+    PROACTIVE_MIN_GAP_SECONDS,
+    PROACTIVE_NEXT_MAX_SECONDS,
+    PROACTIVE_NEXT_MIN_SECONDS,
 )
-from database.db import get_recent_messages, get_latest_message_timestamp
+from database.db import get_latest_message_timestamp, get_recent_messages
 
 
 def _next_utc_midnight() -> int:
@@ -116,10 +116,7 @@ class ProactiveEngine:
         if s["count_today"] >= PROACTIVE_MAX_PER_DAY:
             s["next_attempt_at"] = s["day_reset_at"]
         else:
-            s["next_attempt_at"] = (
-                time.time()
-                + random.randint(PROACTIVE_NEXT_MIN_SECONDS, PROACTIVE_NEXT_MAX_SECONDS)
-            )
+            s["next_attempt_at"] = time.time() + random.randint(PROACTIVE_NEXT_MIN_SECONDS, PROACTIVE_NEXT_MAX_SECONDS)
 
 
 # Module-level singleton

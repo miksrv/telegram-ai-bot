@@ -3,7 +3,8 @@ Telegram Photo Utilities
 Handles extracting photo URLs and captions from Telegram messages
 """
 
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
 from telebot import TeleBot
 from telebot.types import Message
 

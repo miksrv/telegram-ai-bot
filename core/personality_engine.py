@@ -11,9 +11,7 @@ class PersonalityEngine:
         Convert 0..1 float into 0..9 level
         """
         value = max(0.0, min(1.0, value))
-        return min(PersonalityEngine.LEVELS - 1,
-                   floor(value * PersonalityEngine.LEVELS))
-
+        return min(PersonalityEngine.LEVELS - 1, floor(value * PersonalityEngine.LEVELS))
 
     @staticmethod
     def offtopic_rule(level):
@@ -31,7 +29,6 @@ class PersonalityEngine:
         ]
         return rules[level]
 
-
     @staticmethod
     def provocation_rule(level):
         rules = [
@@ -47,7 +44,6 @@ class PersonalityEngine:
             "Maximum restraint.",
         ]
         return rules[level]
-
 
     @staticmethod
     def spam_rule(level):
@@ -65,7 +61,6 @@ class PersonalityEngine:
         ]
         return rules[level]
 
-
     @staticmethod
     def rudeness_rule(level):
         rules = [
@@ -82,7 +77,6 @@ class PersonalityEngine:
         ]
         return rules[level]
 
-
     @staticmethod
     def verbosity_rule(level):
         rules = [
@@ -98,7 +92,6 @@ class PersonalityEngine:
             "Maximum analytical depth.",
         ]
         return rules[level]
-
 
     # ----------------------------
     # PUBLIC ENTRYPOINT

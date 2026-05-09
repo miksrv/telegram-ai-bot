@@ -3,28 +3,27 @@ Telegram Message Handler
 Handles incoming messages, triggers, cooldowns, and dispatches to TARSBrain
 """
 
-import time
-import random
 import logging
+import random
+import time
 
 from telebot import TeleBot, types
 
-from core.brain import brain
-from core.memory import memory
-
-from utils.photo import extract_photo_url
-from utils.identity import extract_telegram_identity
-from utils.triggers import is_calling_tars, is_reply_to_bot
 from config.settings import (
     ADMIN_IDS,
     PROACTIVE_CHAT_IDS,
-    PROACTIVE_MIN_WORD_COUNT,
     PROACTIVE_MIN_CHAR_COUNT,
+    PROACTIVE_MIN_WORD_COUNT,
 )
-from database.db import save_message, ensure_user_profile_exists
+from core.brain import brain
 
 # Global cooldown dictionary imported from cooldown module
 from core.cooldown import cooldowns
+from core.memory import memory
+from database.db import ensure_user_profile_exists, save_message
+from utils.identity import extract_telegram_identity
+from utils.photo import extract_photo_url
+from utils.triggers import is_calling_tars, is_reply_to_bot
 
 
 def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -80,10 +79,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         and message.content_type == "text"
         and text_content
         and not text_content.startswith("/")
-        and (
-            len(text_content.split()) >= PROACTIVE_MIN_WORD_COUNT
-            or len(text_content) >= PROACTIVE_MIN_CHAR_COUNT
-        )
+        and (len(text_content.split()) >= PROACTIVE_MIN_WORD_COUNT or len(text_content) >= PROACTIVE_MIN_CHAR_COUNT)
     ):
         try:
             save_message(
@@ -113,7 +109,9 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     # --- Cooldown check ---
     if not cooldowns.allowed(user_id):
-        bot.reply_to(message, "Вы задаете слишком много вопросов. Пожалуйста, подождите немного перед следующим сообщением.")
+        bot.reply_to(
+            message, "Вы задаете слишком много вопросов. Пожалуйста, подождите немного перед следующим сообщением."
+        )
         return
 
     # --- Logging ---
@@ -129,18 +127,11 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # --- Generate reply ---
     if photo_url and (has_trigger or is_reply):
         reply = brain.analyze_image(
-            chat_id=chat_id,
-            user_id=user_id,
-            image_url=photo_url,
-            caption=caption,
-            identity=identity
+            chat_id=chat_id, user_id=user_id, image_url=photo_url, caption=caption, identity=identity
         )
     else:
         reply = brain.think(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_message=text_content[:1500],  # MAX_INPUT_CHARS
-            identity=identity
+            chat_id=chat_id, user_id=user_id, user_message=text_content[:1500], identity=identity  # MAX_INPUT_CHARS
         )
 
     # --- Send reply ---

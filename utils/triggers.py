@@ -5,6 +5,7 @@ Handles detection of bot mentions in text messages
 
 import re
 from typing import Set
+
 from telebot import TeleBot, types
 
 # Define trigger words (can be expanded)
@@ -22,6 +23,7 @@ def is_calling_tars(text: str) -> bool:
         return False
     return bool(TRIGGER_REGEX.search(text))
 
+
 def is_reply_to_bot(bot: TeleBot, message: types.Message) -> bool:
     """
     Checks if the message is a reply to the bot.
@@ -29,10 +31,11 @@ def is_reply_to_bot(bot: TeleBot, message: types.Message) -> bool:
     """
     bot_id = getattr(bot, "bot_id", None) or bot.get_me().id
     return (
-            message.reply_to_message is not None and
-            message.reply_to_message.from_user is not None and
-            message.reply_to_message.from_user.id == bot_id
+        message.reply_to_message is not None
+        and message.reply_to_message.from_user is not None
+        and message.reply_to_message.from_user.id == bot_id
     )
+
 
 def add_trigger(new_trigger: str, triggers_set: Set[str] = TRIGGERS):
     """

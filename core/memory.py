@@ -1,7 +1,7 @@
-import time
 import threading
+import time
 from collections import deque
-from typing import Dict, Deque, Tuple
+from typing import Deque, Dict, Tuple
 
 from config.settings import (
     MAX_CONTEXT_MESSAGES,
@@ -10,9 +10,8 @@ from config.settings import (
 )
 from database.db import flush_memory, load_memory
 
-
-ChatHistoryEntry = Tuple[int, str, str]   # (user_id, role, text)
-UserHistoryEntry = Tuple[str, str]        # (role, text)
+ChatHistoryEntry = Tuple[int, str, str]  # (user_id, role, text)
+UserHistoryEntry = Tuple[str, str]  # (role, text)
 
 
 class MemoryManager:
@@ -84,11 +83,11 @@ class MemoryManager:
             return list(history)[-MAX_CONTEXT_MESSAGES:]
 
     def add_chat_memory(
-            self,
-            chat_id: int,
-            user_id: int,
-            user_msg: str,
-            bot_reply: str,
+        self,
+        chat_id: int,
+        user_id: int,
+        user_msg: str,
+        bot_reply: str,
     ):
         with self._lock:
             if chat_id not in self.chat_storage:
@@ -125,10 +124,10 @@ class MemoryManager:
         return "\n".join(lines)
 
     def add_user_memory(
-            self,
-            user_id: int,
-            user_msg: str,
-            bot_reply: str,
+        self,
+        user_id: int,
+        user_msg: str,
+        bot_reply: str,
     ):
         with self._lock:
             if user_id not in self.user_storage:
@@ -184,17 +183,13 @@ class MemoryManager:
         now = time.time()
 
         with self._lock:
-            expired = [
-                cid for cid, data in self.chat_storage.items()
-                if now - data["last_access"] > MEMORY_TTL_SECONDS
-            ]
+            expired = [cid for cid, data in self.chat_storage.items() if now - data["last_access"] > MEMORY_TTL_SECONDS]
 
             for cid in expired:
                 del self.chat_storage[cid]
 
             expired_users = [
-                uid for uid, data in self.user_storage.items()
-                if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
+                uid for uid, data in self.user_storage.items() if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
             ]
 
             for uid in expired_users:

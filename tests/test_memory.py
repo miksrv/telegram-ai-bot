@@ -13,6 +13,7 @@ def make_mm() -> MemoryManager:
 # get_chat_context / get_chat_history
 # --------------------------------------------------
 
+
 def test_empty_chat_context_returns_empty_string():
     mm = make_mm()
     assert mm.get_chat_context(999) == ""
@@ -54,6 +55,7 @@ def test_chat_history_multiple_turns():
 # last_sender_is_bot
 # --------------------------------------------------
 
+
 def test_last_sender_is_bot_after_reply():
     mm = make_mm()
     mm.add_chat_memory(1, 100, "hello", "hi")
@@ -68,6 +70,7 @@ def test_last_sender_not_bot_on_unknown_chat():
 # --------------------------------------------------
 # get_stats
 # --------------------------------------------------
+
 
 def test_stats_empty_chat():
     mm = make_mm()
@@ -88,6 +91,7 @@ def test_stats_counts_entries():
 # --------------------------------------------------
 # size
 # --------------------------------------------------
+
 
 def test_size_tracks_active_chats():
     mm = make_mm()

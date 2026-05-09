@@ -17,6 +17,7 @@ def _profile(**overrides):
 # quantize()
 # --------------------------------------------------
 
+
 def test_quantize_zero():
     assert PersonalityEngine.quantize(0.0) == 0
 
@@ -45,6 +46,7 @@ def test_quantize_near_boundary():
 # --------------------------------------------------
 # build_prompt_rules()
 # --------------------------------------------------
+
 
 def test_rules_returns_string():
     result = PersonalityEngine.build_prompt_rules(_profile())

@@ -4,16 +4,18 @@ All user profile logic is centralized.
 """
 
 import json
+import logging
 import os
 import sqlite3
 import time
-import logging
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Tuple
+
 from config.settings import DB_PATH
 
 # ==========================================================
 # DATABASE CONNECTION
 # ==========================================================
+
 
 def get_connection() -> sqlite3.Connection:
     """Opens and returns a new SQLite connection."""
@@ -24,11 +26,13 @@ def get_connection() -> sqlite3.Connection:
 # TABLE INITIALIZATION
 # ==========================================================
 
+
 def _init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = get_connection()
     try:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS user_profile (
                 user_id INTEGER PRIMARY KEY,
                 first_name TEXT DEFAULT '',
@@ -44,22 +48,28 @@ def _init_db():
                 notes TEXT DEFAULT '',
                 last_updated INTEGER
             );
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS chat_memory (
                 chat_id INTEGER PRIMARY KEY,
                 last_access REAL,
                 history_json TEXT
             );
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS user_memory (
                 user_id INTEGER PRIMARY KEY,
                 last_access REAL,
                 history_json TEXT
             );
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS messages (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id             INTEGER NOT NULL,
@@ -71,14 +81,18 @@ def _init_db():
                 word_count          INTEGER NOT NULL,
                 timestamp           INTEGER NOT NULL
             );
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
             ON messages(chat_id, timestamp);
-        """)
+        """
+        )
         conn.commit()
     finally:
         conn.close()
+
 
 _init_db()
 
@@ -86,6 +100,7 @@ _init_db()
 # ==========================================================
 # USER PROFILE OPERATIONS
 # ==========================================================
+
 
 def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str, Any]:
     """
@@ -97,22 +112,28 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        row = cursor.execute("""
+        row = cursor.execute(
+            """
             SELECT message_count, avg_offtopic, avg_provocation,
                    avg_spam, avg_rudeness, avg_verbosity,
                    interests, notes, first_name, last_name, username
             FROM user_profile WHERE user_id=?
-                 """, (user_id,)).fetchone()
+                 """,
+            (user_id,),
+        ).fetchone()
 
         if not row:
-            first_name = identity.get('first_name', '') if identity else ''
-            last_name = identity.get('last_name', '') if identity else ''
-            username = identity.get('username', '') if identity else ''
+            first_name = identity.get("first_name", "") if identity else ""
+            last_name = identity.get("last_name", "") if identity else ""
+            username = identity.get("username", "") if identity else ""
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO user_profile(user_id, first_name, last_name, username, last_updated)
                 VALUES (?, ?, ?, ?, ?)
-                """, (user_id, first_name, last_name, username, int(time.time())))
+                """,
+                (user_id, first_name, last_name, username, int(time.time())),
+            )
             conn.commit()
 
             return {
@@ -126,16 +147,25 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
                 "notes": "",
                 "first_name": first_name,
                 "last_name": last_name,
-                "username": username
+                "username": username,
             }
 
         # Если identity передали, обновляем
         if identity:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE user_profile
                 SET first_name=?, last_name=?, username=?, last_updated=?
                 WHERE user_id=?
-                """, (identity.get('first_name',''), identity.get('last_name',''), identity.get('username',''), int(time.time()), user_id))
+                """,
+                (
+                    identity.get("first_name", ""),
+                    identity.get("last_name", ""),
+                    identity.get("username", ""),
+                    int(time.time()),
+                    user_id,
+                ),
+            )
             conn.commit()
 
         return {
@@ -149,7 +179,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "notes": row[7] or "",
             "first_name": row[8] or "",
             "last_name": row[9] or "",
-            "username": row[10] or ""
+            "username": row[10] or "",
         }
     finally:
         conn.close()
@@ -186,11 +216,11 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     # message_count is already incremented by increment_message_count()
     count = max(profile["message_count"], 1)
 
-    avg_offtopic    = (profile["avg_offtopic"]    * (count - 1) + profile_update.get("offtopic",    0))   / count
-    avg_provocation = (profile["avg_provocation"] * (count - 1) + profile_update.get("provocation", 0))   / count
-    avg_spam        = (profile["avg_spam"]        * (count - 1) + profile_update.get("spam",        0))   / count
-    avg_rudeness    = (profile["avg_rudeness"]    * (count - 1) + profile_update.get("rudeness",    0))   / count
-    avg_verbosity   = (profile["avg_verbosity"]   * (count - 1) + profile_update.get("verbosity",   0.5)) / count
+    avg_offtopic = (profile["avg_offtopic"] * (count - 1) + profile_update.get("offtopic", 0)) / count
+    avg_provocation = (profile["avg_provocation"] * (count - 1) + profile_update.get("provocation", 0)) / count
+    avg_spam = (profile["avg_spam"] * (count - 1) + profile_update.get("spam", 0)) / count
+    avg_rudeness = (profile["avg_rudeness"] * (count - 1) + profile_update.get("rudeness", 0)) / count
+    avg_verbosity = (profile["avg_verbosity"] * (count - 1) + profile_update.get("verbosity", 0.5)) / count
 
     # Combine unique interests, capped at 20 entries
     existing = set(profile["interests"])
@@ -199,16 +229,24 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     interests_str = ",".join(merged)
 
     with get_connection() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE user_profile
             SET avg_offtopic=?, avg_provocation=?, avg_spam=?,
                 avg_rudeness=?, avg_verbosity=?, interests=?, last_updated=?
             WHERE user_id=?
-        """, (
-            avg_offtopic, avg_provocation, avg_spam,
-            avg_rudeness, avg_verbosity, interests_str,
-            int(time.time()), user_id,
-        ))
+        """,
+            (
+                avg_offtopic,
+                avg_provocation,
+                avg_spam,
+                avg_rudeness,
+                avg_verbosity,
+                interests_str,
+                int(time.time()),
+                user_id,
+            ),
+        )
         conn.commit()
 
 
@@ -219,11 +257,14 @@ def update_user_notes(user_id: int, new_info: str):
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE user_profile
             SET notes=?, last_updated=?
             WHERE user_id=?
-            """, (new_info, int(time.time()), user_id))
+            """,
+            (new_info, int(time.time()), user_id),
+        )
 
         conn.commit()
 
@@ -231,6 +272,7 @@ def update_user_notes(user_id: int, new_info: str):
 # ==========================================================
 # MEMORY PERSISTENCE
 # ==========================================================
+
 
 def flush_memory(chat_storage: dict, user_storage: dict):
     """
@@ -254,9 +296,7 @@ def flush_memory(chat_storage: dict, user_storage: dict):
             )
 
         conn.commit()
-        logging.info(
-            f"Memory flushed: {len(chat_storage)} chats, {len(user_storage)} users"
-        )
+        logging.info(f"Memory flushed: {len(chat_storage)} chats, {len(user_storage)} users")
     except Exception as e:
         logging.error(f"Failed to flush memory: {e}")
     finally:
@@ -273,27 +313,21 @@ def load_memory() -> Tuple[dict, dict]:
     user_data: dict = {}
     conn = get_connection()
     try:
-        for row in conn.execute(
-            "SELECT chat_id, last_access, history_json FROM chat_memory"
-        ):
+        for row in conn.execute("SELECT chat_id, last_access, history_json FROM chat_memory"):
             chat_id, last_access, history_json = row
             chat_data[chat_id] = {
                 "last_access": last_access,
                 "history": [tuple(e) for e in json.loads(history_json)],
             }
 
-        for row in conn.execute(
-            "SELECT user_id, last_access, history_json FROM user_memory"
-        ):
+        for row in conn.execute("SELECT user_id, last_access, history_json FROM user_memory"):
             user_id, last_access, history_json = row
             user_data[user_id] = {
                 "last_access": last_access,
                 "history": [tuple(e) for e in json.loads(history_json)],
             }
 
-        logging.info(
-            f"Memory loaded: {len(chat_data)} chats, {len(user_data)} users"
-        )
+        logging.info(f"Memory loaded: {len(chat_data)} chats, {len(user_data)} users")
     except Exception as e:
         logging.error(f"Failed to load memory: {e}")
     finally:
@@ -306,23 +340,26 @@ def load_memory() -> Tuple[dict, dict]:
 # MESSAGES TABLE OPERATIONS
 # ==========================================================
 
+
 def save_message(
-        chat_id: int,
-        user_id: int,
-        telegram_message_id: int,
-        first_name: str,
-        username: str,
-        text: str,
+    chat_id: int,
+    user_id: int,
+    telegram_message_id: int,
+    first_name: str,
+    username: str,
+    text: str,
 ):
     """Saves a qualifying text message for proactive context."""
     word_count = len(text.split())
     with get_connection() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO messages(chat_id, user_id, telegram_message_id,
                                  first_name, username, text, word_count, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (chat_id, user_id, telegram_message_id,
-              first_name, username, text, word_count, int(time.time())))
+        """,
+            (chat_id, user_id, telegram_message_id, first_name, username, text, word_count, int(time.time())),
+        )
         conn.commit()
 
 
@@ -333,15 +370,17 @@ def get_recent_messages(chat_id: int, limit: int) -> list:
     """
     conn = get_connection()
     try:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT first_name, username, text
             FROM messages
             WHERE chat_id = ?
             ORDER BY timestamp DESC
             LIMIT ?
-        """, (chat_id, limit)).fetchall()
-        return [{"first_name": r[0], "username": r[1], "text": r[2]}
-                for r in reversed(rows)]
+        """,
+            (chat_id, limit),
+        ).fetchall()
+        return [{"first_name": r[0], "username": r[1], "text": r[2]} for r in reversed(rows)]
     finally:
         conn.close()
 
@@ -351,8 +390,7 @@ def get_latest_message_timestamp(chat_id: int) -> int:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT timestamp FROM messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT 1",
-            (chat_id,)
+            "SELECT timestamp FROM messages WHERE chat_id=? ORDER BY timestamp DESC LIMIT 1", (chat_id,)
         ).fetchone()
         return row[0] if row else 0
     finally:
@@ -370,26 +408,30 @@ def purge_expired_messages(ttl_seconds: int) -> int:
 
 
 def ensure_user_profile_exists(
-        user_id: int,
-        first_name: str,
-        last_name: str,
-        username: str,
+    user_id: int,
+    first_name: str,
+    last_name: str,
+    username: str,
 ):
     """
     Inserts a default user_profile row if none exists.
     Uses INSERT OR IGNORE — zero-cost no-op on duplicate. No LLM involved.
     """
     with get_connection() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR IGNORE INTO user_profile(user_id, first_name, last_name, username, last_updated)
             VALUES (?, ?, ?, ?, ?)
-        """, (user_id, first_name, last_name, username, int(time.time())))
+        """,
+            (user_id, first_name, last_name, username, int(time.time())),
+        )
         conn.commit()
 
 
 # ==========================================================
 # CLEANUP
 # ==========================================================
+
 
 def close_connection():
     """No-op — connections are now opened and closed per-operation."""
