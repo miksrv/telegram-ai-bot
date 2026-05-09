@@ -39,9 +39,10 @@ utils/
 
 ### Conversational message
 1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check
-2. `brain.think` → builds prompt from memory + user profile → Groq API
-3. LLM returns JSON `{reply, profile_update, notes}` → memory updated, profile saved to SQLite
-4. `bot.reply_to` sends response
+2. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → Groq API
+3. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes}` on the first message and every 5th (`message_count % 5 == 0`)
+4. `db_increment_message_count` always runs; profile averages and notes only updated on designated turns
+5. `bot.reply_to` sends response
 
 ### Proactive posting (background)
 1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
@@ -86,7 +87,7 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 
 ## LLM Response Contracts
 
-**Conversational path** (`brain.think`, `brain.analyze_image`):
+**Conversational path — full update** (`brain.think`, `brain.analyze_image`): used on the first message from a user and every 5th interaction (`message_count % 5 == 0`):
 ```json
 {
   "reply": "Text response in Russian",
@@ -102,6 +103,13 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 }
 ```
 
+**Conversational path — reply only**: used on all other turns to reduce output tokens:
+```json
+{
+  "reply": "Text response in Russian"
+}
+```
+
 **Proactive path** (`brain.post_proactively`): only `reply` is returned — no single user is being addressed so `profile_update` and `notes` are absent.
 ```json
 {
@@ -112,9 +120,10 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 ## User Profile System
 
 - Stored in SQLite (`data/tars_user_profiles.db`)
-- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via cumulative moving average each interaction
+- `message_count` increments on every bot response (via `increment_message_count()`), independent of profile updates
+- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via cumulative moving average only on full-update turns (first message + every 5th)
 - `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt
-- `notes` is an LLM-maintained free-text summary of the user, fully replaced each time
+- `notes` is an LLM-maintained free-text summary of the user, fully replaced each time it runs
 
 ## Rate Limiting
 
@@ -132,9 +141,5 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 | `cubesat/payload/photo` | Subscribe | Receive photo responses |
 
 ## Known Issues
-
-See `ROADMAP.md` for a full list of bugs and planned improvements.
-
-**Known issues to be aware of:**
 - `status_handler` and `photo_handler` block the Telegram polling thread for up to 30–45s, preventing other messages from being handled during that window
 - The MQTT message queue is shared — concurrent `/status` or `/photo` requests from multiple users can steal each other's responses
