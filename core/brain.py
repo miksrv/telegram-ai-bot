@@ -19,7 +19,7 @@ from config.settings import (
 )
 
 from core.memory import memory
-from core.prompts import build_general_prompt, get_vision_prompt, build_proactive_prompt
+from core.prompts import build_general_prompt, build_reply_only_prompt, get_vision_prompt, build_proactive_prompt
 from core.personality_engine import PersonalityEngine
 
 from database.profile_repo import db_get_user_profile, db_update_user_profile, db_update_user_notes, db_increment_message_count
@@ -90,15 +90,27 @@ class TARSBrain:
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
-        chat_ctx, user_ctx, identity_block, profile_summary = \
+        chat_ctx, user_ctx, identity_block, profile_summary, profile = \
             self._build_user_context(chat_id, user_id, identity)
 
-        system_content = build_general_prompt(
-            context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-            identity=identity_block,
-            profile_summary=profile_summary,
-            message=user_message,
-        )
+        # Full profile update on first message (msg_count==0) and every 5th thereafter
+        want_full_update = profile["message_count"] % 5 == 0
+
+        context_block = f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}"
+        if want_full_update:
+            system_content = build_general_prompt(
+                context=context_block,
+                identity=identity_block,
+                profile_summary=profile_summary,
+                message=user_message,
+            )
+        else:
+            system_content = build_reply_only_prompt(
+                context=context_block,
+                identity=identity_block,
+                profile_summary=profile_summary,
+                message=user_message,
+            )
 
         try:
             reply, err = self._process_llm_response(
@@ -110,6 +122,7 @@ class TARSBrain:
                 chat_id=chat_id,
                 user_id=user_id,
                 user_input=user_message,
+                update_profile=want_full_update,
             )
 
             if err:
@@ -128,17 +141,28 @@ class TARSBrain:
     def analyze_image(self, chat_id, user_id, image_url, caption, identity):
 
         try:
-            chat_ctx, user_ctx, identity_block, profile_summary = \
+            chat_ctx, user_ctx, identity_block, profile_summary, profile = \
                 self._build_user_context(chat_id, user_id, identity)
+
+            want_full_update = profile["message_count"] % 5 == 0
 
             vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
 
-            system_content = build_general_prompt(
-                context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-                identity=identity_block,
-                profile_summary=profile_summary,
-                message=vision_message,
-            ) + "\n\n" + get_vision_prompt()
+            context_block = f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}"
+            if want_full_update:
+                system_content = build_general_prompt(
+                    context=context_block,
+                    identity=identity_block,
+                    profile_summary=profile_summary,
+                    message=vision_message,
+                ) + "\n\n" + get_vision_prompt()
+            else:
+                system_content = build_reply_only_prompt(
+                    context=context_block,
+                    identity=identity_block,
+                    profile_summary=profile_summary,
+                    message=vision_message,
+                ) + "\n\n" + get_vision_prompt()
 
             img = session.get(image_url, timeout=15)
             img.raise_for_status()
@@ -168,6 +192,7 @@ class TARSBrain:
                 chat_id=chat_id,
                 user_id=user_id,
                 user_input=caption,
+                update_profile=want_full_update,
             )
 
             if err:
@@ -193,6 +218,7 @@ class TARSBrain:
             chat_id,
             user_id,
             user_input,
+            update_profile: bool = True,
     ):
         raw = self._call_llm(
             model,
@@ -207,22 +233,24 @@ class TARSBrain:
             return None, "Ошибка ответа логического модуля"
 
         reply = data.get("reply", "")
-        profile_update = data.get("profile_update", {})
-        notes = data.get("notes")
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
         memory.add_user_memory(user_id, user_input, reply)
 
-        # Always increment the interaction counter first
+        # Always increment the interaction counter
         db_increment_message_count(user_id)
 
-        # Profile update
-        if profile_update:
-            db_update_user_profile(user_id, profile_update)
+        # Profile update only on designated turns (first message + every 5th)
+        if update_profile:
+            profile_update = data.get("profile_update", {})
+            notes = data.get("notes")
 
-        if notes:
-            db_update_user_notes(user_id, notes)
+            if profile_update:
+                db_update_user_profile(user_id, profile_update)
+
+            if notes:
+                db_update_user_notes(user_id, notes)
 
         return reply, None
 
@@ -252,7 +280,7 @@ class TARSBrain:
                 f"Notes: {profile['notes'] or 'none'}"
         )
 
-        return chat_ctx, user_ctx, identity_block, profile_summary
+        return chat_ctx, user_ctx, identity_block, profile_summary, profile
 
 
     # --------------------------------------------------
