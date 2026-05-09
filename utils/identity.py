@@ -24,5 +24,5 @@ def extract_telegram_identity(message: Message) -> dict:
         "first_name": user.first_name or "",
         "last_name": user.last_name or "",
         "username": user.username or "",
-        "language": user.language_code or ""
+        "language": user.language_code or "",
     }

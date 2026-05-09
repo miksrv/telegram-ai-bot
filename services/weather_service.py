@@ -4,6 +4,7 @@ Handles weather API requests
 """
 
 import requests
+
 from config.settings import WEATHER_API_KEY
 
 

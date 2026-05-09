@@ -4,13 +4,13 @@ Hosts the cleanup and proactive posting daemon threads.
 Neither loop blocks the Telegram polling thread.
 """
 
-import time
 import logging
 import threading
+import time
 
 from config.settings import MESSAGE_TTL_SECONDS
-from database.db import purge_expired_messages
 from core.brain import brain
+from database.db import purge_expired_messages
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
     Starts a daemon thread that periodically purges expired messages from the DB.
     Returns the started thread.
     """
+
     def _loop():
         while True:
             try:
@@ -36,16 +37,17 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
 
 
 def start_proactive_loop(
-        bot,
-        allowed_chat_ids: set,
-        engine,
-        interval_seconds: int,
+    bot,
+    allowed_chat_ids: set,
+    engine,
+    interval_seconds: int,
 ) -> threading.Thread:
     """
     Starts a daemon thread that periodically checks each enrolled chat and
     posts a proactive message when the ProactiveEngine approves.
     Returns the started thread.
     """
+
     def _loop():
         while True:
             for chat_id in allowed_chat_ids:
@@ -61,9 +63,7 @@ def start_proactive_loop(
                         logger.info(f"Proactive post sent to chat={chat_id}")
                     else:
                         engine.reschedule_failed(chat_id)
-                        logger.warning(
-                            f"Proactive post skipped (no content) for chat={chat_id}"
-                        )
+                        logger.warning(f"Proactive post skipped (no content) for chat={chat_id}")
 
                 except Exception as e:
                     logger.exception(f"Proactive loop error (chat={chat_id}): {e}")
@@ -76,8 +76,5 @@ def start_proactive_loop(
 
     t = threading.Thread(target=_loop, name="proactive-loop", daemon=True)
     t.start()
-    logger.info(
-        f"Proactive loop started (interval={interval_seconds}s, "
-        f"chats={len(allowed_chat_ids)})"
-    )
+    logger.info(f"Proactive loop started (interval={interval_seconds}s, " f"chats={len(allowed_chat_ids)})")
     return t

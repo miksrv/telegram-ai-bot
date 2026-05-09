@@ -1,30 +1,38 @@
-import json
 import base64
+import json
 import logging
 import time
+from datetime import datetime
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from datetime import datetime
-
 from config.settings import (
-    MODEL_TEXT,
-    MODEL_VISION,
     GROQ_API_KEY,
     MAX_INPUT_CHARS,
+    MODEL_TEXT,
+    MODEL_VISION,
     PROACTIVE_CONTEXT_MESSAGES,
     PROACTIVE_MIN_CONTEXT_MESSAGES,
 )
-
 from core.memory import memory
-from core.prompts import build_general_prompt, get_vision_prompt, build_proactive_prompt
 from core.personality_engine import PersonalityEngine
-
-from database.profile_repo import db_get_user_profile, db_update_user_profile, db_update_user_notes
+from core.prompts import (
+    build_general_prompt,
+    build_general_system_prompt,
+    build_proactive_prompt,
+    build_reply_only_prompt,
+    build_reply_only_system_prompt,
+    get_vision_prompt,
+)
 from database.db import get_recent_messages
-
+from database.profile_repo import (
+    db_get_user_profile,
+    db_increment_message_count,
+    db_update_user_notes,
+    db_update_user_profile,
+)
 
 # --------------------------------------------------
 # Shared HTTP session (connection reuse)
@@ -51,6 +59,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # Helper function for API calls with retry logic
 # ------------------------------------------------
 
+
 def post_with_retry(url, headers, payload, retries=3):
     for attempt in range(retries):
         try:
@@ -64,22 +73,25 @@ def post_with_retry(url, headers, payload, retries=3):
             response.raise_for_status()
             return response
 
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError,
-                ConnectionResetError) as e:
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            ConnectionResetError,
+        ) as e:
 
             logging.warning(f"API retry {attempt+1}/{retries}: {e}")
 
             if attempt == retries - 1:
                 raise
 
-            time.sleep(2 ** attempt)  # exponential backoff
+            time.sleep(2**attempt)  # exponential backoff
 
 
 # ==================================================
 # TARS Brain
 # ==================================================
+
 
 class TARSBrain:
 
@@ -90,26 +102,29 @@ class TARSBrain:
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
-        chat_ctx, user_ctx, identity_block, profile_summary = \
-            self._build_user_context(chat_id, user_id, identity)
+        chat_history, identity_block, profile_summary, profile = self._build_user_context(chat_id, user_id, identity)
 
-        system_content = build_general_prompt(
-            context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-            identity=identity_block,
-            profile_summary=profile_summary,
-            message=user_message,
-        )
+        # Full profile update on first message (msg_count==0) and every 5th thereafter
+        want_full_update = profile["message_count"] % 5 == 0
+
+        if want_full_update:
+            system_content = build_general_system_prompt(identity_block, profile_summary)
+        else:
+            system_content = build_reply_only_system_prompt(identity_block, profile_summary)
+
+        messages = self._build_messages_array(chat_history, user_message, system_content)
 
         try:
             reply, err = self._process_llm_response(
                 MODEL_TEXT,
-                [{"role": "system", "content": system_content}],
+                messages,
                 temperature=0.8,
                 max_tokens=800,
                 top_p=0.95,
                 chat_id=chat_id,
                 user_id=user_id,
                 user_input=user_message,
+                update_profile=want_full_update,
             )
 
             if err:
@@ -121,24 +136,47 @@ class TARSBrain:
             logging.exception(f"Text gen error: {e}")
             return "Сбой логического модуля. Пожалуйста, попробуйте позже."
 
-
     # --------------------------------------------------
     # IMAGE ANALYSIS
     # --------------------------------------------------
     def analyze_image(self, chat_id, user_id, image_url, caption, identity):
 
         try:
-            chat_ctx, user_ctx, identity_block, profile_summary = \
-                self._build_user_context(chat_id, user_id, identity)
+            chat_history, identity_block, profile_summary, profile = self._build_user_context(
+                chat_id, user_id, identity
+            )
+
+            want_full_update = profile["message_count"] % 5 == 0
 
             vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
 
-            system_content = build_general_prompt(
-                context=f"Chat:\n{chat_ctx}\n\nUser:\n{user_ctx}",
-                identity=identity_block,
-                profile_summary=profile_summary,
-                message=vision_message,
-            ) + "\n\n" + get_vision_prompt()
+            chat_lines = [
+                f"User#{uid}: {text}" if role == "user" else f"TARS: {text}" for uid, role, text in chat_history
+            ]
+            context_block = "Chat:\n" + "\n".join(chat_lines) if chat_lines else ""
+
+            if want_full_update:
+                system_content = (
+                    build_general_prompt(
+                        context=context_block,
+                        identity=identity_block,
+                        profile_summary=profile_summary,
+                        message=vision_message,
+                    )
+                    + "\n\n"
+                    + get_vision_prompt()
+                )
+            else:
+                system_content = (
+                    build_reply_only_prompt(
+                        context=context_block,
+                        identity=identity_block,
+                        profile_summary=profile_summary,
+                        message=vision_message,
+                    )
+                    + "\n\n"
+                    + get_vision_prompt()
+                )
 
             img = session.get(image_url, timeout=15)
             img.raise_for_status()
@@ -151,10 +189,7 @@ class TARSBrain:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": vision_message},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}
-                        },
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
                     ],
                 },
             ]
@@ -168,6 +203,7 @@ class TARSBrain:
                 chat_id=chat_id,
                 user_id=user_id,
                 user_input=caption,
+                update_profile=want_full_update,
             )
 
             if err:
@@ -179,20 +215,20 @@ class TARSBrain:
             logging.exception(f"Vision error: {e}")
             return "Ошибка визуального модуля"
 
-
     # --------------------------------------------------
     # Core LLM response processing (shared logic for text and vision)
     # --------------------------------------------------
     def _process_llm_response(
-            self,
-            model,
-            messages,
-            temperature,
-            max_tokens,
-            top_p,
-            chat_id,
-            user_id,
-            user_input,
+        self,
+        model,
+        messages,
+        temperature,
+        max_tokens,
+        top_p,
+        chat_id,
+        user_id,
+        user_input,
+        update_profile: bool = True,
     ):
         raw = self._call_llm(
             model,
@@ -207,29 +243,32 @@ class TARSBrain:
             return None, "Ошибка ответа логического модуля"
 
         reply = data.get("reply", "")
-        profile_update = data.get("profile_update", {})
-        notes = data.get("notes")
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
         memory.add_user_memory(user_id, user_input, reply)
 
-        # Profile update
-        if profile_update:
-            db_update_user_profile(user_id, profile_update)
+        # Always increment the interaction counter
+        db_increment_message_count(user_id)
 
-        if notes:
-            db_update_user_notes(user_id, notes)
+        # Profile update only on designated turns (first message + every 5th)
+        if update_profile:
+            profile_update = data.get("profile_update", {})
+            notes = data.get("notes")
+
+            if profile_update:
+                db_update_user_profile(user_id, profile_update)
+
+            if notes:
+                db_update_user_notes(user_id, notes)
 
         return reply, None
-
 
     # --------------------------------------------------
     # Context building (for both text and vision)
     # --------------------------------------------------
     def _build_user_context(self, chat_id, user_id, identity):
-        chat_ctx = memory.get_chat_context(chat_id)
-        user_ctx = memory.get_user_context(user_id)
+        chat_history = memory.get_chat_history(chat_id)
 
         identity_block = (
             f"- Telegram ID: {identity.get('id')}\n"
@@ -245,12 +284,26 @@ class TARSBrain:
 
         profile_summary = (
             dynamic_rules + "\n\n"
-                f"Interests: {', '.join(profile['interests']) or 'none'}\n"
-                f"Notes: {profile['notes'] or 'none'}"
+            f"Interests: {', '.join(profile['interests']) or 'none'}\n"
+            f"Notes: {profile['notes'] or 'none'}"
         )
 
-        return chat_ctx, user_ctx, identity_block, profile_summary
+        return chat_history, identity_block, profile_summary, profile
 
+    # --------------------------------------------------
+    # Build proper chat completions messages array from raw chat history
+    # --------------------------------------------------
+    def _build_messages_array(self, chat_history: list, current_message: str, system_content: str) -> list:
+        messages = [{"role": "system", "content": system_content}]
+
+        for user_id, role, text in chat_history:
+            if role == "user":
+                messages.append({"role": "user", "content": f"User#{user_id}: {text}"})
+            else:
+                messages.append({"role": "assistant", "content": text})
+
+        messages.append({"role": "user", "content": current_message})
+        return messages
 
     # --------------------------------------------------
     # LLM call abstraction (for both text and vision)
@@ -272,7 +325,6 @@ class TARSBrain:
 
         return response.json()["choices"][0]["message"]["content"].strip()
 
-
     # --------------------------------------------------
     # PROACTIVE POSTING
     # --------------------------------------------------
@@ -288,9 +340,7 @@ class TARSBrain:
             if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
                 return None
 
-            context_lines = [
-                f"{r['first_name']}: {r['text']}" for r in rows
-            ]
+            context_lines = [f"{r['first_name']}: {r['text']}" for r in rows]
             utc_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
             prompt = build_proactive_prompt(context_lines, utc_time)
 

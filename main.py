@@ -5,6 +5,7 @@ Initializes all services and starts polling
 
 import logging
 import os
+
 from dotenv import load_dotenv
 
 # Load .env and configure logging before any other import.
@@ -26,17 +27,18 @@ import time
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from services.telegram_service import init_bot
 from config.settings import (
     ALLOWED_CHAT_IDS,
-    PROACTIVE_ENABLED,
-    PROACTIVE_CHAT_IDS,
     CLEANUP_LOOP_INTERVAL_SECONDS,
+    PROACTIVE_CHAT_IDS,
+    PROACTIVE_ENABLED,
     PROACTIVE_LOOP_INTERVAL_SECONDS,
 )
-from services.mqtt_service import start_mqtt, stop_mqtt
 from core.memory import memory
 from database.db import close_connection
+from services.mqtt_service import start_mqtt, stop_mqtt
+from services.telegram_service import init_bot
+
 
 # --- Graceful shutdown handler ---
 def shutdown(signum, frame):
@@ -65,6 +67,7 @@ if __name__ == "__main__":
     if PROACTIVE_ENABLED:
         from core.proactive_engine import proactive_engine
         from services.background_service import start_cleanup_loop, start_proactive_loop
+
         start_cleanup_loop(CLEANUP_LOOP_INTERVAL_SECONDS)
         start_proactive_loop(bot, PROACTIVE_CHAT_IDS, proactive_engine, PROACTIVE_LOOP_INTERVAL_SECONDS)
         logging.info(f"Proactive engagement active for {len(PROACTIVE_CHAT_IDS)} chat(s)")

@@ -1,13 +1,13 @@
-""" MQTT Service
+"""MQTT Service
 Handles communication with MQTT broker for sending and receiving CubeSat commands/status.
 Integrates with Telegram bot via callbacks or direct calls.
 """
 
 import json
 import logging
-import time
 import threading
-from queue import Queue, Full, Empty
+import time
+from queue import Empty, Full, Queue
 
 import paho.mqtt.client as mqtt
 
@@ -57,7 +57,7 @@ def on_connect(client, userdata, flags, rc):
 
 def on_message(client, userdata, msg):
     try:
-        payload = msg.payload.decode('utf-8')
+        payload = msg.payload.decode("utf-8")
         topic = msg.topic
 
         try:
@@ -104,8 +104,7 @@ def on_disconnect(client, userdata, rc):
             except Exception as e:
                 next_delay = min(delay * 2, max_delay)
                 logger.warning(
-                    f"MQTT reconnect attempt {attempt}/{max_retries} failed: {e}. "
-                    f"Retrying in {next_delay}s"
+                    f"MQTT reconnect attempt {attempt}/{max_retries} failed: {e}. " f"Retrying in {next_delay}s"
                 )
                 delay = next_delay
         logger.error("MQTT reconnect exhausted all retries, giving up")

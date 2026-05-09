@@ -1,9 +1,9 @@
-import time
 import threading
-from typing import Dict, Deque
+import time
 from collections import deque
+from typing import Deque, Dict
 
-from config.settings import USER_COOLDOWN_SECONDS, RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW, RATE_LIMIT_PENALTY
+from config.settings import RATE_LIMIT_COUNT, RATE_LIMIT_PENALTY, RATE_LIMIT_WINDOW, USER_COOLDOWN_SECONDS
 
 
 class CooldownManager:

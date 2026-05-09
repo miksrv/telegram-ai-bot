@@ -4,11 +4,12 @@ Handles Telegram bot initialization and handler registration
 """
 
 import logging
+
 from telebot import TeleBot
 from telebot.types import Message
 
-from handlers import message_handler, status_handler, weather_handler, photo_handler
-from config.settings import BOT_TOKEN, ALLOWED_CHAT_IDS
+from config.settings import ALLOWED_CHAT_IDS, BOT_TOKEN
+from handlers import message_handler, photo_handler, status_handler, weather_handler
 
 
 def init_bot() -> TeleBot:

@@ -1,4 +1,4 @@
-""" Telegram Status Handler
+"""Telegram Status Handler
 Handles /status command — fetches real CubeSat telemetry via MQTT
 """
 
@@ -10,8 +10,9 @@ from datetime import datetime
 from queue import Empty
 
 from telebot import TeleBot, types
-from services.mqtt_service import send_command, register_request, unregister_request
+
 from config.settings import ADMIN_IDS
+from services.mqtt_service import register_request, send_command, unregister_request
 
 MAX_WAIT = 30.0
 
@@ -29,8 +30,9 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     user_id = message.from_user.id
 
     # Проверка прав доступа
-    if (message.chat.type == "private" and user_id not in ADMIN_IDS) or \
-            (chat_id not in allowed_chat_ids and message.chat.type != "private"):
+    if (message.chat.type == "private" and user_id not in ADMIN_IDS) or (
+        chat_id not in allowed_chat_ids and message.chat.type != "private"
+    ):
         bot.reply_to(message, "Доступ запрещён.")
         return
 
@@ -58,12 +60,7 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             try:
                 data = json.loads(payload_str)
                 status_text = format_telemetry_for_telegram(data)
-                bot.send_message(
-                    chat_id,
-                    status_text,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
+                bot.send_message(chat_id, status_text, parse_mode="Markdown", disable_web_page_preview=True)
             except json.JSONDecodeError:
                 logger.error(f"Невалидный JSON в телеметрии: {payload_str[:200]}...")
                 bot.send_message(chat_id, "Получены данные, но формат некорректный 😕")
@@ -108,17 +105,23 @@ def format_telemetry_for_telegram(data: dict) -> str:
     if "eps" in data:
         eps = data["eps"]
         lines.append("\n*EPS:*")
-        if "battery" in eps:     lines.append(f"  🔋 Заряд: {eps['battery']}%")
-        if "voltage" in eps:     lines.append(f"  ⚡ Напряжение: {eps['voltage']} V")
-        if "external_power" in eps: lines.append(f"  ☀️ Внешнее питание: {eps['external_power']}")
+        if "battery" in eps:
+            lines.append(f"  🔋 Заряд: {eps['battery']}%")
+        if "voltage" in eps:
+            lines.append(f"  ⚡ Напряжение: {eps['voltage']} V")
+        if "external_power" in eps:
+            lines.append(f"  ☀️ Внешнее питание: {eps['external_power']}")
 
     # ADCS (ориентация)
     if "adcs" in data:
         adcs = data["adcs"]
         lines.append("\n*ADCS:*")
-        if "roll"  in adcs: lines.append(f" • Roll:  {adcs['roll']:.2f}°")
-        if "pitch" in adcs: lines.append(f" • Pitch: {adcs['pitch']:.2f}°")
-        if "yaw"   in adcs: lines.append(f" • Yaw:   {adcs['yaw']:.2f}°")
+        if "roll" in adcs:
+            lines.append(f" • Roll:  {adcs['roll']:.2f}°")
+        if "pitch" in adcs:
+            lines.append(f" • Pitch: {adcs['pitch']:.2f}°")
+        if "yaw" in adcs:
+            lines.append(f" • Yaw:   {adcs['yaw']:.2f}°")
         if "accel_g" in adcs:
             accel = adcs["accel_g"]
             lines.append(f" • Accel (g): {accel.get('x', '—')}/{accel.get('y', '—')}/{accel.get('z', '—')}")
@@ -130,23 +133,31 @@ def format_telemetry_for_telegram(data: dict) -> str:
     if "payload" in data:
         pl = data["payload"]
         lines.append("\n*Payload:*")
-        if "temperature" in pl: lines.append(f" • Temperature: {pl['temperature']} °C")
-        if "humidity" in pl: lines.append(f" • Humidity: {pl['humidity']} %")
-        if "pressure" in pl: lines.append(f" • Pressure: {pl['pressure']} hPa")
+        if "temperature" in pl:
+            lines.append(f" • Temperature: {pl['temperature']} °C")
+        if "humidity" in pl:
+            lines.append(f" • Humidity: {pl['humidity']} %")
+        if "pressure" in pl:
+            lines.append(f" • Pressure: {pl['pressure']} hPa")
 
     # Системные метрики (если передаются)
     if "system" in data:
         sys = data["system"]
         lines.append("\n*System (RPi):*")
-        if "cpu_percent" in sys: lines.append(f" • CPU: {sys['cpu_percent']:.1f}%")
-        if "ram_percent" in sys: lines.append(f" • RAM: {sys['ram_percent']:.1f}%")
-        if "swap_percent" in sys: lines.append(f" • Swap: {sys['swap_percent']:.1f}%")
-        if "disk_percent" in sys: lines.append(f" • Disk: {sys['disk_percent']:.1f}%")
+        if "cpu_percent" in sys:
+            lines.append(f" • CPU: {sys['cpu_percent']:.1f}%")
+        if "ram_percent" in sys:
+            lines.append(f" • RAM: {sys['ram_percent']:.1f}%")
+        if "swap_percent" in sys:
+            lines.append(f" • Swap: {sys['swap_percent']:.1f}%")
+        if "disk_percent" in sys:
+            lines.append(f" • Disk: {sys['disk_percent']:.1f}%")
         if "uptime_seconds" in sys:
             uptime_hours = sys["uptime_seconds"] // 3600
             uptime_minutes = (sys["uptime_seconds"] % 3600) // 60
             lines.append(f" • Uptime: {int(uptime_hours)}h {int(uptime_minutes)}m")
-        if "cpu_temperature" in sys: lines.append(f" • CPU Temp: {sys['cpu_temperature']} °C")
+        if "cpu_temperature" in sys:
+            lines.append(f" • CPU Temp: {sys['cpu_temperature']} °C")
 
     if len(lines) <= 2:
         return "Получена телеметрия, но данных для отображения нет 😔"

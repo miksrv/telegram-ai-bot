@@ -3,9 +3,10 @@ Telegram Weather Handler
 Handles /weather command
 """
 
-import time
-import random
 import logging
+import random
+import time
+
 from telebot import TeleBot, types
 
 from services.weather_service import get_weather

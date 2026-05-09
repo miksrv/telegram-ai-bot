@@ -15,7 +15,7 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 - **CubeSat photo** — `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT
 - **Weather** — `/weather <city>` fetches current weather from OpenWeatherMap
 - **Rate limiting** — per-user sliding window rate limiter with configurable penalty cooldowns
-- **Conversation memory** — in-RAM chat and per-user context, persisted to SQLite on shutdown and reloaded on restart
+- **Conversation memory** — in-RAM chat history passed to the LLM as structured conversation turns, persisted to SQLite on shutdown and reloaded on restart
 
 ---
 
