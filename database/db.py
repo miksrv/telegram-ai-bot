@@ -155,9 +155,24 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
         conn.close()
 
 
+def increment_message_count(user_id: int):
+    """
+    Increments the interaction counter for every bot response.
+    Always called, independent of whether a profile update runs.
+    This keeps message_count reliable for throttling logic.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_profile SET message_count = message_count + 1, last_updated = ? WHERE user_id = ?",
+            (int(time.time()), user_id),
+        )
+        conn.commit()
+
+
 def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     """
-    Updates the user profile using a moving average.
+    Updates the user profile behavioral averages using a cumulative moving average.
+    message_count is NOT modified here — use increment_message_count() for that.
     profile_update = {
         "offtopic": float,
         "provocation": float,
@@ -168,13 +183,14 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     }
     """
     profile = get_user_profile(user_id)
-    count = profile["message_count"] + 1
+    # message_count is already incremented by increment_message_count()
+    count = max(profile["message_count"], 1)
 
-    avg_offtopic = (profile["avg_offtopic"] * profile["message_count"] + profile_update.get("offtopic", 0)) / count
-    avg_provocation = (profile["avg_provocation"] * profile["message_count"] + profile_update.get("provocation", 0)) / count
-    avg_spam = (profile["avg_spam"] * profile["message_count"] + profile_update.get("spam", 0)) / count
-    avg_rudeness = (profile["avg_rudeness"] * profile["message_count"] + profile_update.get("rudeness", 0)) / count
-    avg_verbosity = (profile["avg_verbosity"] * profile["message_count"] + profile_update.get("verbosity", 0.5)) / count
+    avg_offtopic    = (profile["avg_offtopic"]    * (count - 1) + profile_update.get("offtopic",    0))   / count
+    avg_provocation = (profile["avg_provocation"] * (count - 1) + profile_update.get("provocation", 0))   / count
+    avg_spam        = (profile["avg_spam"]        * (count - 1) + profile_update.get("spam",        0))   / count
+    avg_rudeness    = (profile["avg_rudeness"]    * (count - 1) + profile_update.get("rudeness",    0))   / count
+    avg_verbosity   = (profile["avg_verbosity"]   * (count - 1) + profile_update.get("verbosity",   0.5)) / count
 
     # Combine unique interests, capped at 20 entries
     existing = set(profile["interests"])
@@ -183,38 +199,16 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     interests_str = ",".join(merged)
 
     with get_connection() as conn:
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            INSERT INTO user_profile(
-                user_id, message_count,
-                avg_offtopic, avg_provocation,
-                avg_spam, avg_rudeness,
-                avg_verbosity, interests,
-                last_updated
-            )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                        message_count=excluded.message_count,
-                            avg_offtopic=excluded.avg_offtopic,
-                            avg_provocation=excluded.avg_provocation,
-                            avg_spam=excluded.avg_spam,
-                            avg_rudeness=excluded.avg_rudeness,
-                            avg_verbosity=excluded.avg_verbosity,
-                            interests=excluded.interests,
-                            last_updated=excluded.last_updated
-                    """, (
-                        user_id,
-                        count,
-                        avg_offtopic,
-                        avg_provocation,
-                        avg_spam,
-                        avg_rudeness,
-                        avg_verbosity,
-                        interests_str,
-                        int(time.time())
-                    ))
-
+        conn.execute("""
+            UPDATE user_profile
+            SET avg_offtopic=?, avg_provocation=?, avg_spam=?,
+                avg_rudeness=?, avg_verbosity=?, interests=?, last_updated=?
+            WHERE user_id=?
+        """, (
+            avg_offtopic, avg_provocation, avg_spam,
+            avg_rudeness, avg_verbosity, interests_str,
+            int(time.time()), user_id,
+        ))
         conn.commit()
 
 
