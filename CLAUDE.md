@@ -23,12 +23,12 @@ handlers/
   message_handler.py             # Main message routing: observe block, trigger detection, cooldowns, dispatch
   status_handler.py              # /status: requests CubeSat telemetry via MQTT, waits for reply
   photo_handler.py               # /photo: requests CubeSat photo via MQTT, waits for reply
-  weather_handler.py             # /weather: calls OpenWeatherMap API
+  weather_handler.py             # /weather: validates input, delegates to services/weather_service.py
 services/
   telegram_service.py            # Bot init, handler registration
-  mqtt_service.py                # MQTT client, message queue (paho-mqtt)
+  mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt)
   background_service.py          # Cleanup daemon + proactive posting daemon threads
-  llm_service.py                 # (exists, not actively used — brain.py handles LLM calls)
+  weather_service.py             # OpenWeatherMap API client (used by weather_handler)
 utils/
   triggers.py                    # Trigger word detection + is_reply_to_bot
   identity.py                    # Extracts Telegram user identity dict from message
@@ -51,14 +51,14 @@ utils/
 4. `bot.send_message()` sends; `proactive_engine.record_post()` advances schedule
 
 ### CubeSat telemetry (/status)
-1. `status_handler.handle_status` → publishes `{"command": "get_telemetry"}` to `cubesat/command`
-2. Blocks polling thread waiting up to 30s for reply on `cubesat/telemetry/data`
-3. `format_telemetry_for_telegram` renders Markdown response
+1. `status_handler.handle_status` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "get_telemetry", "request_id": ...}` to `cubesat/command`
+2. Spawns a background daemon thread that waits up to 30s for the matching reply on `cubesat/telemetry/data` (polling thread is **not** blocked)
+3. `format_telemetry_for_telegram` renders Markdown response; the queue is unregistered when done
 
 ### CubeSat photo (/photo)
-1. `photo_handler.handle_photo` → publishes `{"command": "take_photo"}` to `cubesat/command`
-2. Blocks polling thread waiting up to 45s for reply on `cubesat/payload/photo`
-3. Decodes base64 image, sends via `bot.send_photo`
+1. `photo_handler.handle_photo` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "take_photo", "request_id": ..., "params": {"overlay": ...}}` to `cubesat/command`
+2. Spawns a background daemon thread that waits up to 45s for the matching reply on `cubesat/payload/photo` (polling thread is **not** blocked)
+3. Decodes base64 image, sends via `bot.send_photo`; the queue is unregistered when done
 
 ## Configuration (.env)
 
@@ -141,5 +141,6 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 | `cubesat/payload/photo` | Subscribe | Receive photo responses |
 
 ## Known Issues
-- `status_handler` and `photo_handler` block the Telegram polling thread for up to 30–45s, preventing other messages from being handled during that window
-- The MQTT message queue is shared — concurrent `/status` or `/photo` requests from multiple users can steal each other's responses
+- _None currently tracked._ Two previously documented MQTT issues have been resolved:
+  - `/status` and `/photo` no longer block the Telegram polling thread — each waits for its MQTT reply in a background daemon thread.
+  - Responses are no longer shared/stolen — `mqtt_service` routes each reply to a per-request queue keyed by `request_id`, so concurrent `/status`/`/photo` requests stay isolated.
