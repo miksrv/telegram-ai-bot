@@ -10,6 +10,7 @@ import time
 
 from config.settings import MESSAGE_TTL_SECONDS
 from core.brain import brain
+from core.memory import memory
 from database.db import purge_expired_messages
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,9 @@ def start_proactive_loop(
 
                     if reply:
                         bot.send_message(chat_id, reply)
+                        # Record the proactive post in chat memory so that follow-ups
+                        # and replies to it have the right context (avoids hallucination).
+                        memory.add_bot_message(chat_id, reply)
                         engine.record_post(chat_id)
                         logger.info(f"Proactive post sent to chat={chat_id}")
                     else:

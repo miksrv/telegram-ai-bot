@@ -143,6 +143,23 @@ class MemoryManager:
             hist.append(("user", user_msg))
             hist.append(("assistant", bot_reply))
 
+    def add_bot_message(self, chat_id: int, text: str):
+        """Records a standalone bot message (e.g. a proactive post) as an assistant turn.
+
+        Unlike add_chat_memory there is no preceding user message, so the chat history
+        stays coherent when a user later replies to or follows up on a proactive post.
+        """
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                self.chat_storage[chat_id] = {
+                    "last_access": time.time(),
+                    "history": deque(maxlen=MEMORY_LIMIT),
+                }
+
+            store = self.chat_storage[chat_id]
+            store["last_access"] = time.time()
+            store["history"].append((0, "assistant", text))
+
     def last_sender_is_bot(self, chat_id: int) -> bool:
         """Returns True if the last recorded message in the chat was from the bot."""
         with self._lock:

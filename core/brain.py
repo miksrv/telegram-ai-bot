@@ -98,7 +98,7 @@ class TARSBrain:
     # --------------------------------------------------
     # TEXT THINKING
     # --------------------------------------------------
-    def think(self, chat_id, user_id, user_message, identity):
+    def think(self, chat_id, user_id, user_message, identity, reply_to_text=None):
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
@@ -112,7 +112,7 @@ class TARSBrain:
         else:
             system_content = build_reply_only_system_prompt(identity_block, profile_summary)
 
-        messages = self._build_messages_array(chat_history, user_message, system_content)
+        messages = self._build_messages_array(chat_history, user_message, system_content, reply_to_text)
 
         try:
             reply, err = self._process_llm_response(
@@ -293,14 +293,27 @@ class TARSBrain:
     # --------------------------------------------------
     # Build proper chat completions messages array from raw chat history
     # --------------------------------------------------
-    def _build_messages_array(self, chat_history: list, current_message: str, system_content: str) -> list:
+    def _build_messages_array(
+        self, chat_history: list, current_message: str, system_content: str, reply_to_text: str = None
+    ) -> list:
         messages = [{"role": "system", "content": system_content}]
 
+        last_assistant_text = None
         for user_id, role, text in chat_history:
             if role == "user":
                 messages.append({"role": "user", "content": f"User#{user_id}: {text}"})
             else:
                 messages.append({"role": "assistant", "content": text})
+                last_assistant_text = text
+
+        # The user is replying to a specific bot message. Surface its exact text as the
+        # immediately preceding assistant turn so the model answers the right message
+        # instead of guessing — proactive posts and old messages are often absent from
+        # the rolling chat history. Skip if it already is the latest assistant turn.
+        if reply_to_text:
+            snippet = reply_to_text[:MAX_INPUT_CHARS].strip()
+            if snippet and snippet != (last_assistant_text or "").strip():
+                messages.append({"role": "assistant", "content": snippet})
 
         messages.append({"role": "user", "content": current_message})
         return messages

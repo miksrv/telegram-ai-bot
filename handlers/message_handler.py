@@ -124,6 +124,13 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     bot.send_chat_action(chat_id, "typing")
     time.sleep(random.uniform(0.5, 1.2))  # simulate thinking delay
 
+    # If this is a reply to one of the bot's own messages (e.g. a proactive post),
+    # capture that message's text so the LLM knows exactly what is being answered.
+    # Proactive posts and older messages may be absent from the rolling chat memory.
+    reply_to_text = None
+    if is_reply and message.reply_to_message is not None:
+        reply_to_text = message.reply_to_message.text or message.reply_to_message.caption
+
     # --- Generate reply ---
     if photo_url and (has_trigger or is_reply):
         reply = brain.analyze_image(
@@ -131,7 +138,11 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         )
     else:
         reply = brain.think(
-            chat_id=chat_id, user_id=user_id, user_message=text_content[:1500], identity=identity  # MAX_INPUT_CHARS
+            chat_id=chat_id,
+            user_id=user_id,
+            user_message=text_content[:1500],  # MAX_INPUT_CHARS
+            identity=identity,
+            reply_to_text=reply_to_text,
         )
 
     # --- Send reply ---
