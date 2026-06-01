@@ -38,8 +38,8 @@ utils/
 ## Key Data Flows
 
 ### Conversational message
-1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check
-2. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → Groq API
+1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check. When the message is a reply to the bot, the replied-to text is captured and passed to `brain.think` as `reply_to_text`
+2. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → Groq API. If `reply_to_text` is set and isn't already the latest assistant turn, it is injected as the immediately preceding assistant turn so the model answers the exact message being replied to (handles replies to proactive posts / messages evicted from the rolling memory window)
 3. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes}` on the first message and every 5th (`message_count % 5 == 0`)
 4. `db_increment_message_count` always runs; profile averages and notes only updated on designated turns
 5. `bot.reply_to` sends response
@@ -48,7 +48,7 @@ utils/
 1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
 2. For each `PROACTIVE_CHAT_IDS` chat: `proactive_engine.should_post()` checks daily cap, gap, and context size
 3. On approval: `brain.post_proactively()` fetches recent messages → Groq API → JSON `{reply}`
-4. `bot.send_message()` sends; `proactive_engine.record_post()` advances schedule
+4. `bot.send_message()` sends; `memory.add_bot_message()` records the post as a standalone assistant turn in chat memory (so follow-ups/replies have context); `proactive_engine.record_post()` advances schedule
 
 ### CubeSat telemetry (/status)
 1. `status_handler.handle_status` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "get_telemetry", "request_id": ...}` to `cubesat/command`
