@@ -68,6 +68,29 @@ def test_last_sender_not_bot_on_unknown_chat():
 
 
 # --------------------------------------------------
+# add_bot_message (proactive posts)
+# --------------------------------------------------
+
+
+def test_add_bot_message_records_standalone_assistant_turn():
+    mm = make_mm()
+    mm.add_bot_message(1, "spontaneous thought")
+    history = mm.get_chat_history(1)
+    assert history == [(0, "assistant", "spontaneous thought")]
+    assert mm.last_sender_is_bot(1) is True
+
+
+def test_add_bot_message_then_user_reply_keeps_both():
+    mm = make_mm()
+    mm.add_bot_message(1, "proactive post")
+    mm.add_chat_memory(1, 100, "user reply", "bot answer")
+    history = mm.get_chat_history(1)
+    assert history[0] == (0, "assistant", "proactive post")
+    assert history[1] == (100, "user", "user reply")
+    assert history[2] == (100, "assistant", "bot answer")
+
+
+# --------------------------------------------------
 # get_stats
 # --------------------------------------------------
 
