@@ -1,4 +1,4 @@
-# TARS — Telegram AI Bot
+# TARS - Telegram AI Bot
 
 TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (powered by Groq) with a CubeSat satellite ground station interface over MQTT.
 
@@ -6,16 +6,16 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 
 ## Features
 
-- **Conversational AI** — responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses Groq's LLaMA models for text and vision
-- **Proactive engagement** — autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
-- **Adaptive personality** — tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
-- **User profiles** — persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
-- **Image analysis** — analyzes photos posted in the chat with astronomical context awareness
-- **CubeSat telemetry** — `/status` fetches live telemetry from a connected CubeSat via MQTT
-- **CubeSat photo** — `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT
-- **Weather** — `/weather <city>` fetches current weather from OpenWeatherMap
-- **Rate limiting** — per-user sliding window rate limiter with configurable penalty cooldowns
-- **Conversation memory** — in-RAM chat history passed to the LLM as structured conversation turns, persisted to SQLite on shutdown and reloaded on restart
+- **Conversational AI** - responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses Groq's LLaMA models for text and vision
+- **Proactive engagement** - autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
+- **Adaptive personality** - tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
+- **User profiles** - persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
+- **Image analysis** - analyzes photos posted in the chat with astronomical context awareness
+- **CubeSat telemetry** - `/status` fetches live telemetry from a connected CubeSat via MQTT
+- **CubeSat photo** - `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT
+- **Weather** - `/weather <city>` fetches current weather from OpenWeatherMap
+- **Rate limiting** - per-user sliding window rate limiter with configurable penalty cooldowns
+- **Conversation memory** - in-RAM chat history passed to the LLM as structured conversation turns, persisted to SQLite on shutdown and reloaded on restart
 
 ---
 
