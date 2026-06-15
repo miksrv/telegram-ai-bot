@@ -103,6 +103,24 @@ _init_db()
 # ==========================================================
 
 
+def _parse_interests(raw: str) -> list:
+    """Decodes the stored interests field.
+
+    New rows store a JSON array; legacy rows used a comma-separated string.
+    Both are accepted so old databases keep working without a migration.
+    """
+    if not raw:
+        return []
+    raw = raw.strip()
+    try:
+        value = json.loads(raw)
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str, Any]:
     """
     Returns a user profile dictionary.
@@ -176,7 +194,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "avg_spam": row[3],
             "avg_rudeness": row[4],
             "avg_verbosity": row[5],
-            "interests": row[6].split(",") if row[6] else [],
+            "interests": _parse_interests(row[6]),
             "notes": row[7] or "",
             "first_name": row[8] or "",
             "last_name": row[9] or "",
@@ -233,11 +251,18 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     avg_rudeness = ema(profile["avg_rudeness"], profile_update.get("rudeness", 0))
     avg_verbosity = ema(profile["avg_verbosity"], profile_update.get("verbosity", 0.5))
 
-    # Combine unique interests, capped at 20 entries
-    existing = set(profile["interests"])
-    incoming = set(profile_update.get("interests", []))
-    merged = list(existing | incoming)[:20]
-    interests_str = ",".join(merged)
+    # Merge interests newest-first with a stable dedup, capped at 20. Putting
+    # incoming before existing means that when the cap is hit the OLDEST entries
+    # are dropped, not the freshest — and order is deterministic (unlike a set).
+    seen = set()
+    merged = []
+    for item in list(profile_update.get("interests", [])) + list(profile["interests"]):
+        key = str(item).strip()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(key)
+    merged = merged[:20]
+    interests_str = json.dumps(merged, ensure_ascii=False)
 
     with get_connection() as conn:
         conn.execute(

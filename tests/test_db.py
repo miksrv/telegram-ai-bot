@@ -81,6 +81,22 @@ def test_update_profile_changes_averages():
     assert "astronomy" in profile["interests"]
 
 
+def test_interests_dedup_keeps_newest_and_survives_commas():
+    user = 9_000_777
+    get_user_profile(user, _IDENTITY)
+    increment_message_count(user)
+    base = {"offtopic": 0.0, "provocation": 0.0, "spam": 0.0, "rudeness": 0.0, "verbosity": 0.5}
+    update_user_profile(user, {**base, "interests": ["Луна", "галактики, туманности"]})
+    update_user_profile(user, {**base, "interests": ["Луна", "кометы"]})
+    interests = get_user_profile(user)["interests"]
+    # Comma inside an interest is preserved (JSON storage, not split).
+    assert "галактики, туманности" in interests
+    # Deduplicated — "Луна" appears once.
+    assert interests.count("Луна") == 1
+    # Freshest interest is retained.
+    assert "кометы" in interests
+
+
 # --------------------------------------------------
 # update_user_notes
 # --------------------------------------------------
