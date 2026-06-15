@@ -100,7 +100,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             logging.error(f"Observe error: {e}")
 
     # --- Extract text and photo ---
-    photo_url, caption = extract_photo_url(bot, message)
+    photo_url, caption, photo_from_reply = extract_photo_url(bot, message)
     identity = extract_telegram_identity(message)
 
     # Ignore message if it doesn't call TARS and is not a reply
@@ -139,7 +139,14 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # --- Generate reply ---
     if photo_url and (has_trigger or is_reply):
         reply = brain.analyze_image(
-            chat_id=chat_id, user_id=user_id, image_url=photo_url, caption=caption, identity=identity
+            chat_id=chat_id,
+            user_id=user_id,
+            image_url=photo_url,
+            caption=caption,
+            identity=identity,
+            reply_to_text=reply_to_text,
+            reply_to_is_bot=reply_to_is_bot,
+            photo_from_reply=photo_from_reply,
         )
     else:
         reply = brain.think(

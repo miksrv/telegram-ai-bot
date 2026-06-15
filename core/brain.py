@@ -19,10 +19,8 @@ from config.settings import (
 from core.memory import memory
 from core.personality_engine import PersonalityEngine
 from core.prompts import (
-    build_general_prompt,
     build_general_system_prompt,
     build_proactive_prompt,
-    build_reply_only_prompt,
     build_reply_only_system_prompt,
     get_vision_prompt,
 )
@@ -141,7 +139,17 @@ class TARSBrain:
     # --------------------------------------------------
     # IMAGE ANALYSIS
     # --------------------------------------------------
-    def analyze_image(self, chat_id, user_id, image_url, caption, identity):
+    def analyze_image(
+        self,
+        chat_id,
+        user_id,
+        image_url,
+        caption,
+        identity,
+        reply_to_text=None,
+        reply_to_is_bot=True,
+        photo_from_reply=False,
+    ):
 
         try:
             chat_history, identity_block, profile_summary, profile = self._build_user_context(
@@ -150,51 +158,46 @@ class TARSBrain:
 
             want_full_update = profile["message_count"] % 5 == 0
 
-            vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
+            caption_text = (caption or "").strip()
+            vision_message = f"[IMAGE]\nCaption: {caption_text}" if caption_text else "[IMAGE]"
 
-            chat_lines = [
-                f"User#{uid}: {text}" if role == "user" else f"TARS: {text}" for uid, role, text in chat_history
-            ]
-            context_block = "Chat:\n" + "\n".join(chat_lines) if chat_lines else ""
-
+            # Same system-only templates as the text path, plus the vision extensions.
             if want_full_update:
-                system_content = (
-                    build_general_prompt(
-                        context=context_block,
-                        identity=identity_block,
-                        profile_summary=profile_summary,
-                        message=vision_message,
-                    )
-                    + "\n\n"
-                    + get_vision_prompt()
-                )
+                system_content = build_general_system_prompt(identity_block, profile_summary)
             else:
-                system_content = (
-                    build_reply_only_prompt(
-                        context=context_block,
-                        identity=identity_block,
-                        profile_summary=profile_summary,
-                        message=vision_message,
-                    )
-                    + "\n\n"
-                    + get_vision_prompt()
-                )
+                system_content = build_reply_only_system_prompt(identity_block, profile_summary)
+            system_content += "\n\n" + get_vision_prompt()
+
+            # When the analyzed photo comes from a replied-to (older) message, the recent
+            # chat history is about something else and is not useful for describing this
+            # image — drop it. Otherwise the image accompanies the live conversation, so
+            # keep the rolling context.
+            history = [] if photo_from_reply else chat_history
+
+            # Reuse the text path's conversation builder so the image turn gets the same
+            # global context, ancient-reply pruning, and quote handling. Its final user
+            # turn (a plain string) is then upgraded to a multimodal text+image message.
+            messages = self._build_messages_array(
+                history, vision_message, system_content, reply_to_text, reply_to_is_bot
+            )
 
             img = session.get(image_url, timeout=15)
             img.raise_for_status()
 
             image_b64 = base64.b64encode(img.content).decode()
 
-            messages = [
-                {"role": "system", "content": system_content},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": vision_message},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    ],
-                },
-            ]
+            final_text = messages[-1]["content"]
+            messages[-1] = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": final_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            }
+
+            # Record the photo in chat memory so following turns know one was shared and
+            # what was said about it (the caption), instead of storing a bare None.
+            memory_text = f"[изображение] {caption_text}".strip() if caption_text else "[изображение]"
 
             reply, err = self._process_llm_response(
                 MODEL_VISION,
@@ -204,7 +207,7 @@ class TARSBrain:
                 top_p=0.9,
                 chat_id=chat_id,
                 user_id=user_id,
-                user_input=caption,
+                user_input=memory_text,
                 update_profile=want_full_update,
             )
 
@@ -306,15 +309,6 @@ class TARSBrain:
 
         snippet = reply_to_text[:MAX_INPUT_CHARS].strip() if reply_to_text else ""
 
-        # Reply to ANOTHER user's message (surfaced because the bot was mentioned). Fold the
-        # quoted text into the current user message so the model sees what is referenced,
-        # without mislabeling another person's words as TARS's own assistant turn. The
-        # bot-quote handling below is skipped (snippet cleared) and the rolling history is
-        # kept, since the user is still in the live conversation.
-        if snippet and not reply_to_is_bot:
-            current_message = f'(в ответ на сообщение: "{snippet}")\n{current_message}'
-            snippet = ""
-
         # Is the replied-to message still inside the rolling window? Match on exact
         # text, or substantial containment to tolerate truncation on either side.
         in_window = False
@@ -325,12 +319,19 @@ class TARSBrain:
                     in_window = True
                     break
 
-        # Ancient reply: the user is answering an OLD bot message (a proactive post
-        # or a turn already evicted from memory). The recent rolling history is about
-        # a different topic and would only mislead the model, so drop it entirely and
-        # anchor solely on the quoted message. This also trims tokens.
+        # A reply to ANOTHER user's message is folded into the current user turn as an
+        # explicit reference, rather than mislabeling another person's words as TARS's
+        # own assistant turn.
+        if snippet and not reply_to_is_bot:
+            current_message = f'(в ответ на сообщение: "{snippet}")\n{current_message}'
+
+        # Ancient reply: the user is answering an OLD message (a proactive post, an old
+        # photo, or a turn already evicted from memory). The recent rolling history is
+        # about a different topic and would only mislead the model, so drop it entirely
+        # and anchor solely on the quoted message. This also trims tokens.
         if snippet and not in_window:
-            messages.append({"role": "assistant", "content": snippet})
+            if reply_to_is_bot:
+                messages.append({"role": "assistant", "content": snippet})
             messages.append({"role": "user", "content": current_message})
             return messages
 
@@ -342,10 +343,10 @@ class TARSBrain:
                 messages.append({"role": "assistant", "content": text})
                 last_assistant_text = text
 
-        # In-window reply: surface the exact quoted turn as the immediately preceding
-        # assistant message so the model answers the right one, unless it already is
-        # the latest assistant turn.
-        if snippet and snippet != (last_assistant_text or "").strip():
+        # In-window reply to the bot: surface the exact quoted turn as the immediately
+        # preceding assistant message so the model answers the right one, unless it
+        # already is the latest assistant turn.
+        if snippet and reply_to_is_bot and snippet != (last_assistant_text or "").strip():
             messages.append({"role": "assistant", "content": snippet})
 
         messages.append({"role": "user", "content": current_message})
