@@ -9,7 +9,14 @@ from telebot import TeleBot
 from telebot.types import Message
 
 from config.settings import ALLOWED_CHAT_IDS, BOT_TOKEN
-from handlers import message_handler, photo_handler, status_handler, weather_handler
+from handlers import (
+    help_handler,
+    message_handler,
+    photo_handler,
+    stats_handler,
+    status_handler,
+    weather_handler,
+)
 
 
 def init_bot() -> TeleBot:
@@ -32,6 +39,16 @@ def init_bot() -> TeleBot:
     @bot.message_handler(commands=["weather"])
     def _weather_handler(message: Message):
         weather_handler.handle_weather(bot, message, ALLOWED_CHAT_IDS)
+
+    # --- Stats command handler ---
+    @bot.message_handler(commands=["stats"])
+    def _stats_handler(message: Message):
+        stats_handler.handle_stats(bot, message, ALLOWED_CHAT_IDS)
+
+    # --- Help command handler ---
+    @bot.message_handler(commands=["help", "start"])
+    def _help_handler(message: Message):
+        help_handler.handle_help(bot, message, ALLOWED_CHAT_IDS)
 
     # --- Main message handler (text & photos) ---
     @bot.message_handler(content_types=["text", "photo"])
