@@ -297,6 +297,27 @@ class TARSBrain:
     ) -> list:
         messages = [{"role": "system", "content": system_content}]
 
+        snippet = reply_to_text[:MAX_INPUT_CHARS].strip() if reply_to_text else ""
+
+        # Is the replied-to message still inside the rolling window? Match on exact
+        # text, or substantial containment to tolerate truncation on either side.
+        in_window = False
+        if snippet:
+            for _uid, _role, text in chat_history:
+                t = (text or "").strip()
+                if t and (t == snippet or (len(snippet) >= 16 and (snippet in t or t in snippet))):
+                    in_window = True
+                    break
+
+        # Ancient reply: the user is answering an OLD bot message (a proactive post
+        # or a turn already evicted from memory). The recent rolling history is about
+        # a different topic and would only mislead the model, so drop it entirely and
+        # anchor solely on the quoted message. This also trims tokens.
+        if snippet and not in_window:
+            messages.append({"role": "assistant", "content": snippet})
+            messages.append({"role": "user", "content": current_message})
+            return messages
+
         last_assistant_text = None
         for user_id, role, text in chat_history:
             if role == "user":
@@ -305,14 +326,11 @@ class TARSBrain:
                 messages.append({"role": "assistant", "content": text})
                 last_assistant_text = text
 
-        # The user is replying to a specific bot message. Surface its exact text as the
-        # immediately preceding assistant turn so the model answers the right message
-        # instead of guessing — proactive posts and old messages are often absent from
-        # the rolling chat history. Skip if it already is the latest assistant turn.
-        if reply_to_text:
-            snippet = reply_to_text[:MAX_INPUT_CHARS].strip()
-            if snippet and snippet != (last_assistant_text or "").strip():
-                messages.append({"role": "assistant", "content": snippet})
+        # In-window reply: surface the exact quoted turn as the immediately preceding
+        # assistant message so the model answers the right one, unless it already is
+        # the latest assistant turn.
+        if snippet and snippet != (last_assistant_text or "").strip():
+            messages.append({"role": "assistant", "content": snippet})
 
         messages.append({"role": "user", "content": current_message})
         return messages

@@ -42,3 +42,42 @@ def test_empty_reply_to_text_is_ignored():
     messages = brain._build_messages_array([], "сообщение", "SYS", reply_to_text="   ")
     assert messages[-1] == {"role": "user", "content": "сообщение"}
     assert all(m["role"] != "assistant" for m in messages)
+
+
+def test_ancient_reply_prunes_unrelated_history():
+    """Replying to an old bot message outside the window drops misleading recent history."""
+    brain = make_brain()
+    history = [
+        (100, "user", "какая сегодня погода"),
+        (100, "assistant", "облачно, наблюдения не выйдут"),
+    ]
+    messages = brain._build_messages_array(
+        history,
+        "и какое же увеличение лучше",
+        "SYS",
+        reply_to_text="Для Сатурна на этой апертуре оптимально около 150x",
+    )
+    # Unrelated recent turns are dropped; only the quoted message anchors the reply.
+    assert messages == [
+        {"role": "system", "content": "SYS"},
+        {"role": "assistant", "content": "Для Сатурна на этой апертуре оптимально около 150x"},
+        {"role": "user", "content": "и какое же увеличение лучше"},
+    ]
+
+
+def test_in_window_reply_keeps_history():
+    """Replying to a message still in the window keeps the surrounding context."""
+    brain = make_brain()
+    history = [
+        (100, "user", "вопрос про телескоп"),
+        (100, "assistant", "Для Сатурна на этой апертуре оптимально около 150x увеличения"),
+    ]
+    messages = brain._build_messages_array(
+        history,
+        "а для Юпитера",
+        "SYS",
+        reply_to_text="Для Сатурна на этой апертуре оптимально около 150x увеличения",
+    )
+    # History is preserved; the quoted turn is already the latest assistant turn.
+    assert messages[1] == {"role": "user", "content": "User#100: вопрос про телескоп"}
+    assert messages[-1] == {"role": "user", "content": "а для Юпитера"}
