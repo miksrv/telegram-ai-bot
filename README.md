@@ -156,6 +156,8 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `/status` | Allowed chats | Fetch live CubeSat telemetry |
 | `/photo [overlay]` | Allowed chats | Request a photo from the CubeSat camera |
 | `/weather <city>` | Allowed chats | Get current weather for a city |
+| `/stats` | Allowed chats / admin DM | Aggregate database statistics (users, interactions, stored messages) in Russian |
+| `/help`, `/start` | Allowed chats / DM | Short bot description and command list in Russian |
 
 The bot also responds when users reply directly to any of its messages. When the reply targets a bot message that is no longer in the rolling chat memory (e.g. an older message or a proactive post), the replied-to text is surfaced to the LLM so it answers the exact message being referenced.
 

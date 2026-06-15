@@ -24,6 +24,8 @@ handlers/
   status_handler.py              # /status: requests CubeSat telemetry via MQTT, waits for reply
   photo_handler.py               # /photo: requests CubeSat photo via MQTT, waits for reply
   weather_handler.py             # /weather: validates input, delegates to services/weather_service.py
+  stats_handler.py               # /stats: aggregate DB statistics (db.get_db_stats), Russian output
+  help_handler.py                # /help, /start: static bot description + command list (Russian)
 services/
   telegram_service.py            # Bot init, handler registration
   mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt)

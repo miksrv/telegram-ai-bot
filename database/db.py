@@ -450,6 +450,42 @@ def ensure_user_profile_exists(
 
 
 # ==========================================================
+# STATISTICS
+# ==========================================================
+
+
+def get_db_stats() -> Dict[str, Any]:
+    """
+    Returns aggregate statistics across the database for the /stats command.
+
+    Keys:
+        users               total user profiles known to the bot
+        interactions        total bot replies served (sum of message_count)
+        stored_messages     observed messages currently kept for proactive context
+        observed_chats      distinct chats with stored messages
+        oldest_message_ts   Unix timestamp of the oldest stored message (0 if none)
+        newest_message_ts   Unix timestamp of the newest stored message (0 if none)
+    """
+    conn = get_connection()
+    try:
+        users = conn.execute("SELECT COUNT(*) FROM user_profile").fetchone()[0]
+        interactions = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM user_profile").fetchone()[0]
+        stored_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        observed_chats = conn.execute("SELECT COUNT(DISTINCT chat_id) FROM messages").fetchone()[0]
+        bounds = conn.execute("SELECT MIN(timestamp), MAX(timestamp) FROM messages").fetchone()
+        return {
+            "users": users,
+            "interactions": interactions,
+            "stored_messages": stored_messages,
+            "observed_chats": observed_chats,
+            "oldest_message_ts": bounds[0] or 0,
+            "newest_message_ts": bounds[1] or 0,
+        }
+    finally:
+        conn.close()
+
+
+# ==========================================================
 # CLEANUP
 # ==========================================================
 
