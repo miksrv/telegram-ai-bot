@@ -34,7 +34,7 @@ telegram-ai-bot/
 │   ├── proactive_engine.py          # Per-chat state machine (daily cap, gap, scheduling)
 │   └── cooldown.py                  # Sliding window rate limiter
 ├── database/
-│   ├── db.py                        # SQLite: user_profile + messages tables, all CRUD
+│   ├── db.py                        # SQLite: user_profile, chat_memory, user_memory, messages tables; CRUD + memory persistence
 │   └── profile_repo.py              # Re-export layer used by brain.py
 ├── handlers/
 │   ├── message_handler.py           # Message routing: observe, trigger detection, cooldowns
@@ -157,7 +157,7 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `/photo [overlay]` | Allowed chats | Request a photo from the CubeSat camera |
 | `/weather <city>` | Allowed chats | Get current weather for a city |
 
-The bot also responds when users reply directly to any of its messages.
+The bot also responds when users reply directly to any of its messages. When the reply targets a bot message that is no longer in the rolling chat memory (e.g. an older message or a proactive post), the replied-to text is surfaced to the LLM so it answers the exact message being referenced.
 
 ---
 
@@ -169,8 +169,9 @@ When enabled, TARS passively observes text messages in enrolled chats and period
 
 1. Every qualifying message (text, non-command, ≥3 words or ≥15 characters) sent in a `PROACTIVE_CHAT_IDS` chat is stored in the `messages` table.
 2. A background daemon wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS` and checks each enrolled chat.
-3. If the daily cap has not been reached, the minimum gap has passed, and there is enough context (≥ `PROACTIVE_MIN_CONTEXT_MESSAGES` rows), the LLM is called with the recent message history.
-4. The generated reply is sent to the chat via `bot.send_message()`.
+3. The chat is eligible only when **all** conditions hold: the per-chat schedule (`next_attempt_at`) has elapsed, the daily cap (`PROACTIVE_MAX_PER_DAY`, reset at UTC midnight) is not reached, the minimum gap has passed, there is enough context (≥ `PROACTIVE_MIN_CONTEXT_MESSAGES` rows), and at least one new user message has arrived since the last proactive post.
+4. On approval the LLM is called with the recent message history, and the generated reply is sent via `bot.send_message()`. The post is also recorded in chat memory (as a standalone assistant turn) so later replies/follow-ups have context, and the next attempt is scheduled in a random `PROACTIVE_NEXT_MIN_SECONDS`–`PROACTIVE_NEXT_MAX_SECONDS` window.
+5. If generation fails (no content or an error), the daily budget is preserved and the next attempt is simply pushed forward.
 
 The LLM is **never** called reactively by this feature — only the scheduled daemon triggers it. A separate cleanup daemon purges messages older than `MESSAGE_TTL_SECONDS` every `CLEANUP_LOOP_INTERVAL_SECONDS`.
 
@@ -196,6 +197,8 @@ Command format (JSON):
 {"command": "get_telemetry", "request_id": "1741000000"}
 {"command": "take_photo",    "request_id": "photo_1741000000", "params": {"overlay": false}}
 ```
+
+Responses are routed back to the originating command via a per-request queue keyed by `request_id`, so concurrent `/status` and `/photo` requests never collide, and neither command blocks the Telegram polling thread (each waits for its reply in a background daemon thread). On an unexpected disconnect the client automatically reconnects with exponential backoff (5s → capped at 300s, up to 10 attempts).
 
 If no MQTT broker is available, the bot starts normally — only `/status` and `/photo` will be non-functional.
 
@@ -255,8 +258,8 @@ sudo -u tars mkdir -p /opt/tars/data
 sudo -u tars cp .env.example .env
 sudo -u tars nano .env   # fill in credentials
 
-# Install and start the service
-sudo cp deploy/tars.service /etc/systemd/system/tars.service
+# Create the systemd unit (see the service file above) and start it
+sudo nano /etc/systemd/system/tars.service   # paste the unit from the section above
 sudo systemctl daemon-reload
 sudo systemctl enable --now tars
 ```
@@ -316,6 +319,14 @@ sudo systemctl start tars
 - Verify `PROACTIVE_CHAT_IDS` contains valid chat IDs that are also in `ALLOWED_CHAT_IDS`
 - The bot needs at least `PROACTIVE_MIN_CONTEXT_MESSAGES` (default: 10) saved messages before it will post — the chat needs some activity first
 - Check logs for `"Proactive engagement active for N chat(s)"` at startup
+
+---
+
+## Development & Testing
+
+- Run the test suite with `pytest tests/ -v`. `conftest.py` injects fake required env vars before import (since `config/settings.py` validates them at import time) and stubs `telebot` when it isn't installed, so tests run without real credentials.
+- CI runs, in order: `black --check --line-length 120 .`, `isort --check-only --profile black`, `pylint` (on non-test files, `fail-under 7.0`), then `pytest`.
+- Formatting and lint settings live in `pyproject.toml` — match the 120-character line length and run black/isort before committing.
 
 ---
 
