@@ -11,16 +11,11 @@ from config.settings import (
 from database.db import flush_memory, load_memory
 
 ChatHistoryEntry = Tuple[int, str, str]  # (user_id, role, text)
-UserHistoryEntry = Tuple[str, str]  # (role, text)
 
 
 class MemoryManager:
     """
-    Manages the bot's fast in-memory storage.
-
-    Divided into:
-        - Chat memory (chat context)
-        - User memory (personal short context)
+    Manages the bot's fast in-memory chat context.
 
     State is persisted to SQLite on shutdown via flush() and reloaded
     automatically on the next startup.
@@ -33,21 +28,15 @@ class MemoryManager:
     def __init__(self):
         self._lock = threading.Lock()
         self.chat_storage: Dict[int, Dict] = {}
-        self.user_storage: Dict[int, Dict] = {}
         self._load()
 
     def _load(self):
-        """Restores chat and user history from SQLite into RAM."""
-        chat_data, user_data = load_memory()
+        """Restores chat history from SQLite into RAM."""
+        chat_data = load_memory()
         for chat_id, data in chat_data.items():
             self.chat_storage[chat_id] = {
                 "last_access": data["last_access"],
                 "history": deque(data["history"], maxlen=MEMORY_LIMIT),
-            }
-        for user_id, data in user_data.items():
-            self.user_storage[user_id] = {
-                "last_access": data["last_access"],
-                "history": deque(data["history"], maxlen=20),
             }
 
     # ==================================================
@@ -102,47 +91,6 @@ class MemoryManager:
             store["history"].append((user_id, "user", user_msg))
             store["history"].append((user_id, "assistant", bot_reply))
 
-    # ==================================================
-    # USER CONTEXT
-    # ==================================================
-
-    def get_user_context(self, user_id: int) -> str:
-        with self._lock:
-            if user_id not in self.user_storage:
-                return ""
-
-            self.user_storage[user_id]["last_access"] = time.time()
-
-            history: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
-            snapshot = list(history)[-5:]
-
-        lines = []
-        for role, text in snapshot:
-            speaker = "User" if role == "user" else "TARS"
-            lines.append(f"{speaker}: {text}")
-
-        return "\n".join(lines)
-
-    def add_user_memory(
-        self,
-        user_id: int,
-        user_msg: str,
-        bot_reply: str,
-    ):
-        with self._lock:
-            if user_id not in self.user_storage:
-                self.user_storage[user_id] = {
-                    "last_access": time.time(),
-                    "history": deque(maxlen=20),
-                }
-
-            hist: Deque[UserHistoryEntry] = self.user_storage[user_id]["history"]
-
-            self.user_storage[user_id]["last_access"] = time.time()
-
-            hist.append(("user", user_msg))
-            hist.append(("assistant", bot_reply))
-
     def add_bot_message(self, chat_id: int, text: str):
         """Records a standalone bot message (e.g. a proactive post) as an assistant turn.
 
@@ -190,7 +138,7 @@ class MemoryManager:
     def flush(self):
         """Persists current in-RAM state to SQLite. Called on shutdown."""
         with self._lock:
-            flush_memory(self.chat_storage, self.user_storage)
+            flush_memory(self.chat_storage)
 
     def cleanup(self):
         """
@@ -205,13 +153,6 @@ class MemoryManager:
             for cid in expired:
                 del self.chat_storage[cid]
 
-            expired_users = [
-                uid for uid, data in self.user_storage.items() if now - data.get("last_access", 0) > MEMORY_TTL_SECONDS
-            ]
-
-            for uid in expired_users:
-                del self.user_storage[uid]
-
     # ==================================================
     # DEBUG
     # ==================================================
@@ -219,7 +160,6 @@ class MemoryManager:
     def size(self):
         return {
             "chats": len(self.chat_storage),
-            "users": len(self.user_storage),
         }
 
 

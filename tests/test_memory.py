@@ -5,7 +5,6 @@ def make_mm() -> MemoryManager:
     """Fresh MemoryManager with empty in-RAM storage (DB may exist but is empty in CI)."""
     mm = MemoryManager()
     mm.chat_storage.clear()
-    mm.user_storage.clear()
     return mm
 
 

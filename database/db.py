@@ -8,7 +8,7 @@ import logging
 import os
 import sqlite3
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 from config.settings import DB_PATH, PROFILE_EMA_ALPHA
 
@@ -54,15 +54,6 @@ def _init_db():
             """
             CREATE TABLE IF NOT EXISTS chat_memory (
                 chat_id INTEGER PRIMARY KEY,
-                last_access REAL,
-                history_json TEXT
-            );
-        """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_memory (
-                user_id INTEGER PRIMARY KEY,
                 last_access REAL,
                 history_json TEXT
             );
@@ -284,7 +275,7 @@ def update_user_notes(user_id: int, new_info: str):
 # ==========================================================
 
 
-def flush_memory(chat_storage: dict, user_storage: dict):
+def flush_memory(chat_storage: dict):
     """
     Writes the current in-RAM MemoryManager state to SQLite so it
     survives restarts.  Called by the shutdown handler.
@@ -298,29 +289,21 @@ def flush_memory(chat_storage: dict, user_storage: dict):
                 (chat_id, data["last_access"], json.dumps(list(data["history"]))),
             )
 
-        conn.execute("DELETE FROM user_memory")
-        for user_id, data in user_storage.items():
-            conn.execute(
-                "INSERT INTO user_memory(user_id, last_access, history_json) VALUES (?, ?, ?)",
-                (user_id, data["last_access"], json.dumps(list(data["history"]))),
-            )
-
         conn.commit()
-        logging.info(f"Memory flushed: {len(chat_storage)} chats, {len(user_storage)} users")
+        logging.info(f"Memory flushed: {len(chat_storage)} chats")
     except Exception as e:
         logging.error(f"Failed to flush memory: {e}")
     finally:
         conn.close()
 
 
-def load_memory() -> Tuple[dict, dict]:
+def load_memory() -> dict:
     """
-    Reads persisted chat and user history from SQLite.
-    Returns (chat_data, user_data) suitable for reconstructing
-    MemoryManager storage.  Returns empty dicts on any error.
+    Reads persisted chat history from SQLite.
+    Returns chat_data suitable for reconstructing MemoryManager storage.
+    Returns an empty dict on any error.
     """
     chat_data: dict = {}
-    user_data: dict = {}
     conn = get_connection()
     try:
         for row in conn.execute("SELECT chat_id, last_access, history_json FROM chat_memory"):
@@ -330,20 +313,13 @@ def load_memory() -> Tuple[dict, dict]:
                 "history": [tuple(e) for e in json.loads(history_json)],
             }
 
-        for row in conn.execute("SELECT user_id, last_access, history_json FROM user_memory"):
-            user_id, last_access, history_json = row
-            user_data[user_id] = {
-                "last_access": last_access,
-                "history": [tuple(e) for e in json.loads(history_json)],
-            }
-
-        logging.info(f"Memory loaded: {len(chat_data)} chats, {len(user_data)} users")
+        logging.info(f"Memory loaded: {len(chat_data)} chats")
     except Exception as e:
         logging.error(f"Failed to load memory: {e}")
     finally:
         conn.close()
 
-    return chat_data, user_data
+    return chat_data
 
 
 # ==========================================================

@@ -246,7 +246,6 @@ class TARSBrain:
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
-        memory.add_user_memory(user_id, user_input, reply)
 
         # Always increment the interaction counter
         db_increment_message_count(user_id)
