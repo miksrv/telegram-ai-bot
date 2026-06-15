@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Any, Dict, Tuple
 
-from config.settings import DB_PATH
+from config.settings import DB_PATH, PROFILE_EMA_ALPHA
 
 # ==========================================================
 # DATABASE CONNECTION
@@ -201,7 +201,15 @@ def increment_message_count(user_id: int):
 
 def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     """
-    Updates the user profile behavioral averages using a cumulative moving average.
+    Updates the user profile behavioral averages using an exponential moving
+    average (EMA): avg = alpha * sample + (1 - alpha) * avg.
+
+    EMA is intentionally independent of message_count. Profile updates run only
+    on a fraction of messages (first + every 5th), so a cumulative average keyed
+    on message_count would shrink each new sample's weight ~5x too fast and
+    freeze the profile. EMA keeps the profile responsive to recent behavior and
+    self-corrects over time.
+
     message_count is NOT modified here — use increment_message_count() for that.
     profile_update = {
         "offtopic": float,
@@ -213,14 +221,16 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     }
     """
     profile = get_user_profile(user_id)
-    # message_count is already incremented by increment_message_count()
-    count = max(profile["message_count"], 1)
+    alpha = PROFILE_EMA_ALPHA
 
-    avg_offtopic = (profile["avg_offtopic"] * (count - 1) + profile_update.get("offtopic", 0)) / count
-    avg_provocation = (profile["avg_provocation"] * (count - 1) + profile_update.get("provocation", 0)) / count
-    avg_spam = (profile["avg_spam"] * (count - 1) + profile_update.get("spam", 0)) / count
-    avg_rudeness = (profile["avg_rudeness"] * (count - 1) + profile_update.get("rudeness", 0)) / count
-    avg_verbosity = (profile["avg_verbosity"] * (count - 1) + profile_update.get("verbosity", 0.5)) / count
+    def ema(previous: float, sample: float) -> float:
+        return alpha * sample + (1 - alpha) * previous
+
+    avg_offtopic = ema(profile["avg_offtopic"], profile_update.get("offtopic", 0))
+    avg_provocation = ema(profile["avg_provocation"], profile_update.get("provocation", 0))
+    avg_spam = ema(profile["avg_spam"], profile_update.get("spam", 0))
+    avg_rudeness = ema(profile["avg_rudeness"], profile_update.get("rudeness", 0))
+    avg_verbosity = ema(profile["avg_verbosity"], profile_update.get("verbosity", 0.5))
 
     # Combine unique interests, capped at 20 entries
     existing = set(profile["interests"])

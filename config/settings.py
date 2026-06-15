@@ -54,6 +54,10 @@ MAX_CONTEXT_MESSAGES = 10
 MEMORY_LIMIT = 50
 MEMORY_TTL_SECONDS = 3600 * 24
 
+# Weight of the freshest sample in the behavioral profile's exponential
+# moving average (0..1). Higher = more reactive to recent behavior.
+PROFILE_EMA_ALPHA = float(os.getenv("PROFILE_EMA_ALPHA", "0.3"))
+
 # --------------------------------------------
 # Additional rate limit parameters
 # (can be moved to settings later)
