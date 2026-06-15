@@ -29,6 +29,14 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
                 logger.info(f"Cleanup: purged {n} expired messages")
             except Exception as e:
                 logger.exception(f"Cleanup loop error: {e}")
+
+            # Periodically persist in-RAM chat memory so it survives a crash or
+            # hard kill, not just a graceful shutdown. flush() is idempotent.
+            try:
+                memory.flush()
+            except Exception as e:
+                logger.exception(f"Periodic memory flush error: {e}")
+
             time.sleep(interval_seconds)
 
     t = threading.Thread(target=_loop, name="cleanup-loop", daemon=True)
