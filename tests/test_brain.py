@@ -65,6 +65,24 @@ def test_ancient_reply_prunes_unrelated_history():
     ]
 
 
+def test_reply_to_other_user_is_folded_into_message():
+    """A reply to another user's message is folded in as context, not a bot turn."""
+    brain = make_brain()
+    history = [(100, "user", "что-то старое"), (100, "assistant", "ответ бота")]
+    messages = brain._build_messages_array(
+        history,
+        "ТАРС, это правда?",
+        "SYS",
+        reply_to_text="Луна сегодня в перигее",
+        reply_to_is_bot=False,
+    )
+    # History preserved; no spurious assistant turn for the quote.
+    assert messages[-1]["role"] == "user"
+    assert "Луна сегодня в перигее" in messages[-1]["content"]
+    assert "ТАРС, это правда?" in messages[-1]["content"]
+    assert {"role": "assistant", "content": "Луна сегодня в перигее"} not in messages
+
+
 def test_in_window_reply_keeps_history():
     """Replying to a message still in the window keeps the surrounding context."""
     brain = make_brain()

@@ -98,7 +98,7 @@ class TARSBrain:
     # --------------------------------------------------
     # TEXT THINKING
     # --------------------------------------------------
-    def think(self, chat_id, user_id, user_message, identity, reply_to_text=None):
+    def think(self, chat_id, user_id, user_message, identity, reply_to_text=None, reply_to_is_bot=True):
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
@@ -112,7 +112,9 @@ class TARSBrain:
         else:
             system_content = build_reply_only_system_prompt(identity_block, profile_summary)
 
-        messages = self._build_messages_array(chat_history, user_message, system_content, reply_to_text)
+        messages = self._build_messages_array(
+            chat_history, user_message, system_content, reply_to_text, reply_to_is_bot
+        )
 
         try:
             reply, err = self._process_llm_response(
@@ -293,11 +295,25 @@ class TARSBrain:
     # Build proper chat completions messages array from raw chat history
     # --------------------------------------------------
     def _build_messages_array(
-        self, chat_history: list, current_message: str, system_content: str, reply_to_text: str = None
+        self,
+        chat_history: list,
+        current_message: str,
+        system_content: str,
+        reply_to_text: str = None,
+        reply_to_is_bot: bool = True,
     ) -> list:
         messages = [{"role": "system", "content": system_content}]
 
         snippet = reply_to_text[:MAX_INPUT_CHARS].strip() if reply_to_text else ""
+
+        # Reply to ANOTHER user's message (surfaced because the bot was mentioned). Fold the
+        # quoted text into the current user message so the model sees what is referenced,
+        # without mislabeling another person's words as TARS's own assistant turn. The
+        # bot-quote handling below is skipped (snippet cleared) and the rolling history is
+        # kept, since the user is still in the live conversation.
+        if snippet and not reply_to_is_bot:
+            current_message = f'(в ответ на сообщение: "{snippet}")\n{current_message}'
+            snippet = ""
 
         # Is the replied-to message still inside the rolling window? Match on exact
         # text, or substantial containment to tolerate truncation on either side.
