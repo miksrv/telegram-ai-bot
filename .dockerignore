@@ -1,0 +1,32 @@
+# Secrets — provided at runtime via env_file, never bake into the image
+.env
+.env.*
+!.env.example
+
+# Version control & IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data (mounted as a volume at runtime)
+data/
+
+# Tests and dev-only files
+tests/
+conftest.py
+requirements-dev.txt
+
+# Docs / misc
+*.md
+.github/

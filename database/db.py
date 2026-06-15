@@ -8,9 +8,9 @@ import logging
 import os
 import sqlite3
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
-from config.settings import DB_PATH
+from config.settings import DB_PATH, PROFILE_EMA_ALPHA
 
 # ==========================================================
 # DATABASE CONNECTION
@@ -18,8 +18,18 @@ from config.settings import DB_PATH
 
 
 def get_connection() -> sqlite3.Connection:
-    """Opens and returns a new SQLite connection."""
-    return sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    """Opens and returns a new SQLite connection.
+
+    WAL journaling lets readers run concurrently with a writer, which matters
+    because several daemon threads (polling, proactive, cleanup, status/photo)
+    touch the DB at once. journal_mode persists at the DB level; synchronous and
+    busy_timeout are per-connection, so they are set on every open.
+    """
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
 
 
 # ==========================================================
@@ -61,15 +71,6 @@ def _init_db():
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS user_memory (
-                user_id INTEGER PRIMARY KEY,
-                last_access REAL,
-                history_json TEXT
-            );
-        """
-        )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS messages (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id             INTEGER NOT NULL,
@@ -100,6 +101,24 @@ _init_db()
 # ==========================================================
 # USER PROFILE OPERATIONS
 # ==========================================================
+
+
+def _parse_interests(raw: str) -> list:
+    """Decodes the stored interests field.
+
+    New rows store a JSON array; legacy rows used a comma-separated string.
+    Both are accepted so old databases keep working without a migration.
+    """
+    if not raw:
+        return []
+    raw = raw.strip()
+    try:
+        value = json.loads(raw)
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str, Any]:
@@ -175,7 +194,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "avg_spam": row[3],
             "avg_rudeness": row[4],
             "avg_verbosity": row[5],
-            "interests": row[6].split(",") if row[6] else [],
+            "interests": _parse_interests(row[6]),
             "notes": row[7] or "",
             "first_name": row[8] or "",
             "last_name": row[9] or "",
@@ -201,7 +220,15 @@ def increment_message_count(user_id: int):
 
 def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     """
-    Updates the user profile behavioral averages using a cumulative moving average.
+    Updates the user profile behavioral averages using an exponential moving
+    average (EMA): avg = alpha * sample + (1 - alpha) * avg.
+
+    EMA is intentionally independent of message_count. Profile updates run only
+    on a fraction of messages (first + every 5th), so a cumulative average keyed
+    on message_count would shrink each new sample's weight ~5x too fast and
+    freeze the profile. EMA keeps the profile responsive to recent behavior and
+    self-corrects over time.
+
     message_count is NOT modified here — use increment_message_count() for that.
     profile_update = {
         "offtopic": float,
@@ -213,20 +240,29 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     }
     """
     profile = get_user_profile(user_id)
-    # message_count is already incremented by increment_message_count()
-    count = max(profile["message_count"], 1)
+    alpha = PROFILE_EMA_ALPHA
 
-    avg_offtopic = (profile["avg_offtopic"] * (count - 1) + profile_update.get("offtopic", 0)) / count
-    avg_provocation = (profile["avg_provocation"] * (count - 1) + profile_update.get("provocation", 0)) / count
-    avg_spam = (profile["avg_spam"] * (count - 1) + profile_update.get("spam", 0)) / count
-    avg_rudeness = (profile["avg_rudeness"] * (count - 1) + profile_update.get("rudeness", 0)) / count
-    avg_verbosity = (profile["avg_verbosity"] * (count - 1) + profile_update.get("verbosity", 0.5)) / count
+    def ema(previous: float, sample: float) -> float:
+        return alpha * sample + (1 - alpha) * previous
 
-    # Combine unique interests, capped at 20 entries
-    existing = set(profile["interests"])
-    incoming = set(profile_update.get("interests", []))
-    merged = list(existing | incoming)[:20]
-    interests_str = ",".join(merged)
+    avg_offtopic = ema(profile["avg_offtopic"], profile_update.get("offtopic", 0))
+    avg_provocation = ema(profile["avg_provocation"], profile_update.get("provocation", 0))
+    avg_spam = ema(profile["avg_spam"], profile_update.get("spam", 0))
+    avg_rudeness = ema(profile["avg_rudeness"], profile_update.get("rudeness", 0))
+    avg_verbosity = ema(profile["avg_verbosity"], profile_update.get("verbosity", 0.5))
+
+    # Merge interests newest-first with a stable dedup, capped at 20. Putting
+    # incoming before existing means that when the cap is hit the OLDEST entries
+    # are dropped, not the freshest — and order is deterministic (unlike a set).
+    seen = set()
+    merged = []
+    for item in list(profile_update.get("interests", [])) + list(profile["interests"]):
+        key = str(item).strip()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(key)
+    merged = merged[:20]
+    interests_str = json.dumps(merged, ensure_ascii=False)
 
     with get_connection() as conn:
         conn.execute(
@@ -274,7 +310,7 @@ def update_user_notes(user_id: int, new_info: str):
 # ==========================================================
 
 
-def flush_memory(chat_storage: dict, user_storage: dict):
+def flush_memory(chat_storage: dict):
     """
     Writes the current in-RAM MemoryManager state to SQLite so it
     survives restarts.  Called by the shutdown handler.
@@ -288,29 +324,21 @@ def flush_memory(chat_storage: dict, user_storage: dict):
                 (chat_id, data["last_access"], json.dumps(list(data["history"]))),
             )
 
-        conn.execute("DELETE FROM user_memory")
-        for user_id, data in user_storage.items():
-            conn.execute(
-                "INSERT INTO user_memory(user_id, last_access, history_json) VALUES (?, ?, ?)",
-                (user_id, data["last_access"], json.dumps(list(data["history"]))),
-            )
-
         conn.commit()
-        logging.info(f"Memory flushed: {len(chat_storage)} chats, {len(user_storage)} users")
+        logging.info(f"Memory flushed: {len(chat_storage)} chats")
     except Exception as e:
         logging.error(f"Failed to flush memory: {e}")
     finally:
         conn.close()
 
 
-def load_memory() -> Tuple[dict, dict]:
+def load_memory() -> dict:
     """
-    Reads persisted chat and user history from SQLite.
-    Returns (chat_data, user_data) suitable for reconstructing
-    MemoryManager storage.  Returns empty dicts on any error.
+    Reads persisted chat history from SQLite.
+    Returns chat_data suitable for reconstructing MemoryManager storage.
+    Returns an empty dict on any error.
     """
     chat_data: dict = {}
-    user_data: dict = {}
     conn = get_connection()
     try:
         for row in conn.execute("SELECT chat_id, last_access, history_json FROM chat_memory"):
@@ -320,20 +348,13 @@ def load_memory() -> Tuple[dict, dict]:
                 "history": [tuple(e) for e in json.loads(history_json)],
             }
 
-        for row in conn.execute("SELECT user_id, last_access, history_json FROM user_memory"):
-            user_id, last_access, history_json = row
-            user_data[user_id] = {
-                "last_access": last_access,
-                "history": [tuple(e) for e in json.loads(history_json)],
-            }
-
-        logging.info(f"Memory loaded: {len(chat_data)} chats, {len(user_data)} users")
+        logging.info(f"Memory loaded: {len(chat_data)} chats")
     except Exception as e:
         logging.error(f"Failed to load memory: {e}")
     finally:
         conn.close()
 
-    return chat_data, user_data
+    return chat_data
 
 
 # ==========================================================

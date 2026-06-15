@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./:/app
+      # Persist only the SQLite database / data dir. The application code is baked
+      # into the image (see Dockerfile), so no source bind mount is needed.
       - ./data:/app/data
-    command: python /app/main.py
 

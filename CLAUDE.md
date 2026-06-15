@@ -161,3 +161,6 @@ The MQTT client (`mqtt_service`) runs `loop_forever` in a background daemon thre
 - _None currently tracked._ Two previously documented MQTT issues have been resolved:
   - `/status` and `/photo` no longer block the Telegram polling thread — each waits for its MQTT reply in a background daemon thread.
   - Responses are no longer shared/stolen — `mqtt_service` routes each reply to a per-request queue keyed by `request_id`, so concurrent `/status`/`/photo` requests stay isolated.
+
+## TODO / Roadmap
+- **Semantic recall from the `messages` table (RAG).** The conversational path (`brain.think`) only sees the rolling in-RAM window (`MAX_CONTEXT_MESSAGES`); anything older is forgotten even though it persists in the `messages` table. Add retrieval over that table — keyword or embedding-based — so the bot can pull in relevant older context on demand (e.g. a user's equipment or a past observation). Note: this trades tokens for memory depth (retrieved snippets enter the prompt), so it is intentionally deferred until the cost/benefit is tuned (e.g. retrieve only on long-gap replies or when the query references absent context).

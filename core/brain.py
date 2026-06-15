@@ -19,10 +19,8 @@ from config.settings import (
 from core.memory import memory
 from core.personality_engine import PersonalityEngine
 from core.prompts import (
-    build_general_prompt,
     build_general_system_prompt,
     build_proactive_prompt,
-    build_reply_only_prompt,
     build_reply_only_system_prompt,
     get_vision_prompt,
 )
@@ -98,7 +96,7 @@ class TARSBrain:
     # --------------------------------------------------
     # TEXT THINKING
     # --------------------------------------------------
-    def think(self, chat_id, user_id, user_message, identity, reply_to_text=None):
+    def think(self, chat_id, user_id, user_message, identity, reply_to_text=None, reply_to_is_bot=True):
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
@@ -112,7 +110,9 @@ class TARSBrain:
         else:
             system_content = build_reply_only_system_prompt(identity_block, profile_summary)
 
-        messages = self._build_messages_array(chat_history, user_message, system_content, reply_to_text)
+        messages = self._build_messages_array(
+            chat_history, user_message, system_content, reply_to_text, reply_to_is_bot
+        )
 
         try:
             reply, err = self._process_llm_response(
@@ -139,7 +139,17 @@ class TARSBrain:
     # --------------------------------------------------
     # IMAGE ANALYSIS
     # --------------------------------------------------
-    def analyze_image(self, chat_id, user_id, image_url, caption, identity):
+    def analyze_image(
+        self,
+        chat_id,
+        user_id,
+        image_url,
+        caption,
+        identity,
+        reply_to_text=None,
+        reply_to_is_bot=True,
+        photo_from_reply=False,
+    ):
 
         try:
             chat_history, identity_block, profile_summary, profile = self._build_user_context(
@@ -148,51 +158,46 @@ class TARSBrain:
 
             want_full_update = profile["message_count"] % 5 == 0
 
-            vision_message = f"[IMAGE]\nCaption: {caption}" if caption else "[IMAGE]"
+            caption_text = (caption or "").strip()
+            vision_message = f"[IMAGE]\nCaption: {caption_text}" if caption_text else "[IMAGE]"
 
-            chat_lines = [
-                f"User#{uid}: {text}" if role == "user" else f"TARS: {text}" for uid, role, text in chat_history
-            ]
-            context_block = "Chat:\n" + "\n".join(chat_lines) if chat_lines else ""
-
+            # Same system-only templates as the text path, plus the vision extensions.
             if want_full_update:
-                system_content = (
-                    build_general_prompt(
-                        context=context_block,
-                        identity=identity_block,
-                        profile_summary=profile_summary,
-                        message=vision_message,
-                    )
-                    + "\n\n"
-                    + get_vision_prompt()
-                )
+                system_content = build_general_system_prompt(identity_block, profile_summary)
             else:
-                system_content = (
-                    build_reply_only_prompt(
-                        context=context_block,
-                        identity=identity_block,
-                        profile_summary=profile_summary,
-                        message=vision_message,
-                    )
-                    + "\n\n"
-                    + get_vision_prompt()
-                )
+                system_content = build_reply_only_system_prompt(identity_block, profile_summary)
+            system_content += "\n\n" + get_vision_prompt()
+
+            # When the analyzed photo comes from a replied-to (older) message, the recent
+            # chat history is about something else and is not useful for describing this
+            # image — drop it. Otherwise the image accompanies the live conversation, so
+            # keep the rolling context.
+            history = [] if photo_from_reply else chat_history
+
+            # Reuse the text path's conversation builder so the image turn gets the same
+            # global context, ancient-reply pruning, and quote handling. Its final user
+            # turn (a plain string) is then upgraded to a multimodal text+image message.
+            messages = self._build_messages_array(
+                history, vision_message, system_content, reply_to_text, reply_to_is_bot
+            )
 
             img = session.get(image_url, timeout=15)
             img.raise_for_status()
 
             image_b64 = base64.b64encode(img.content).decode()
 
-            messages = [
-                {"role": "system", "content": system_content},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": vision_message},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    ],
-                },
-            ]
+            final_text = messages[-1]["content"]
+            messages[-1] = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": final_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            }
+
+            # Record the photo in chat memory so following turns know one was shared and
+            # what was said about it (the caption), instead of storing a bare None.
+            memory_text = f"[изображение] {caption_text}".strip() if caption_text else "[изображение]"
 
             reply, err = self._process_llm_response(
                 MODEL_VISION,
@@ -202,7 +207,7 @@ class TARSBrain:
                 top_p=0.9,
                 chat_id=chat_id,
                 user_id=user_id,
-                user_input=caption,
+                user_input=memory_text,
                 update_profile=want_full_update,
             )
 
@@ -246,7 +251,6 @@ class TARSBrain:
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
-        memory.add_user_memory(user_id, user_input, reply)
 
         # Always increment the interaction counter
         db_increment_message_count(user_id)
@@ -294,9 +298,42 @@ class TARSBrain:
     # Build proper chat completions messages array from raw chat history
     # --------------------------------------------------
     def _build_messages_array(
-        self, chat_history: list, current_message: str, system_content: str, reply_to_text: str = None
+        self,
+        chat_history: list,
+        current_message: str,
+        system_content: str,
+        reply_to_text: str = None,
+        reply_to_is_bot: bool = True,
     ) -> list:
         messages = [{"role": "system", "content": system_content}]
+
+        snippet = reply_to_text[:MAX_INPUT_CHARS].strip() if reply_to_text else ""
+
+        # Is the replied-to message still inside the rolling window? Match on exact
+        # text, or substantial containment to tolerate truncation on either side.
+        in_window = False
+        if snippet:
+            for _uid, _role, text in chat_history:
+                t = (text or "").strip()
+                if t and (t == snippet or (len(snippet) >= 16 and (snippet in t or t in snippet))):
+                    in_window = True
+                    break
+
+        # A reply to ANOTHER user's message is folded into the current user turn as an
+        # explicit reference, rather than mislabeling another person's words as TARS's
+        # own assistant turn.
+        if snippet and not reply_to_is_bot:
+            current_message = f'(в ответ на сообщение: "{snippet}")\n{current_message}'
+
+        # Ancient reply: the user is answering an OLD message (a proactive post, an old
+        # photo, or a turn already evicted from memory). The recent rolling history is
+        # about a different topic and would only mislead the model, so drop it entirely
+        # and anchor solely on the quoted message. This also trims tokens.
+        if snippet and not in_window:
+            if reply_to_is_bot:
+                messages.append({"role": "assistant", "content": snippet})
+            messages.append({"role": "user", "content": current_message})
+            return messages
 
         last_assistant_text = None
         for user_id, role, text in chat_history:
@@ -306,14 +343,11 @@ class TARSBrain:
                 messages.append({"role": "assistant", "content": text})
                 last_assistant_text = text
 
-        # The user is replying to a specific bot message. Surface its exact text as the
-        # immediately preceding assistant turn so the model answers the right message
-        # instead of guessing — proactive posts and old messages are often absent from
-        # the rolling chat history. Skip if it already is the latest assistant turn.
-        if reply_to_text:
-            snippet = reply_to_text[:MAX_INPUT_CHARS].strip()
-            if snippet and snippet != (last_assistant_text or "").strip():
-                messages.append({"role": "assistant", "content": snippet})
+        # In-window reply to the bot: surface the exact quoted turn as the immediately
+        # preceding assistant message so the model answers the right one, unless it
+        # already is the latest assistant turn.
+        if snippet and reply_to_is_bot and snippet != (last_assistant_text or "").strip():
+            messages.append({"role": "assistant", "content": snippet})
 
         messages.append({"role": "user", "content": current_message})
         return messages
@@ -321,7 +355,7 @@ class TARSBrain:
     # --------------------------------------------------
     # LLM call abstraction (for both text and vision)
     # --------------------------------------------------
-    def _call_llm(self, model, messages, temperature, max_tokens, top_p):
+    def _call_llm(self, model, messages, temperature, max_tokens, top_p, json_mode=True):
         payload = {
             "model": model,
             "messages": messages,
@@ -329,6 +363,12 @@ class TARSBrain:
             "max_tokens": max_tokens,
             "top_p": top_p,
         }
+
+        # Force valid JSON output at the API level instead of relying on prompt
+        # instructions + brace-extraction fallback. All prompts already request
+        # JSON and contain the word "json" (a Groq JSON-mode requirement).
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         response = post_with_retry(
             "https://api.groq.com/openai/v1/chat/completions",
