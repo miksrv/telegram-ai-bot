@@ -321,7 +321,7 @@ class TARSBrain:
     # --------------------------------------------------
     # LLM call abstraction (for both text and vision)
     # --------------------------------------------------
-    def _call_llm(self, model, messages, temperature, max_tokens, top_p):
+    def _call_llm(self, model, messages, temperature, max_tokens, top_p, json_mode=True):
         payload = {
             "model": model,
             "messages": messages,
@@ -329,6 +329,12 @@ class TARSBrain:
             "max_tokens": max_tokens,
             "top_p": top_p,
         }
+
+        # Force valid JSON output at the API level instead of relying on prompt
+        # instructions + brace-extraction fallback. All prompts already request
+        # JSON and contain the word "json" (a Groq JSON-mode requirement).
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         response = post_with_retry(
             "https://api.groq.com/openai/v1/chat/completions",
