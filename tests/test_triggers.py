@@ -48,3 +48,28 @@ def test_command_slash_no_match():
 
 def test_tars_with_punctuation_after():
     assert is_calling_tars("tars!") is True
+
+
+def test_cyrillic_inflected_genitive():
+    assert is_calling_tars("спроси у тарса про Юпитер") is True
+
+
+def test_cyrillic_inflected_dative():
+    assert is_calling_tars("напиши тарсу вопрос") is True
+
+
+def test_cyrillic_inflected_accusative():
+    assert is_calling_tars("позови тарса сюда") is True
+
+
+def test_cyrillic_inflected_instrumental():
+    assert is_calling_tars("поговорим с тарсом") is True
+
+
+def test_latin_inflected():
+    assert is_calling_tars("спроси у tarsа") is True
+
+
+def test_inflected_not_matched_as_substring():
+    # The stem must start a word — a stem in the middle of a word must not match.
+    assert is_calling_tars("контарса нет такого слова") is False

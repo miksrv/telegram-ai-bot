@@ -8,11 +8,20 @@ from typing import Set
 
 from telebot import TeleBot, types
 
-# Define trigger words (can be expanded)
-TRIGGERS = {"ТАRS", "тарс", "tars", "tars,", "тарс,"}
+# Trigger word stems (can be expanded via add_trigger).
+# Matching is case-insensitive and also fires on inflected forms — the stem
+# must start a word, but any trailing letters are allowed, so "тарса", "тарсу",
+# "тарсом", "тарсик" all match while substrings like "tartars" do not.
+TRIGGERS = {"тарс", "tars"}
+
+
+def _compile(triggers: Set[str]) -> "re.Pattern":
+    """Builds the trigger regex: a word starting with any stem, plus its ending."""
+    return re.compile(r"\b(?:" + "|".join(re.escape(t) for t in triggers) + r")\w*", re.IGNORECASE)
+
 
 # Precompile regex for performance
-TRIGGER_REGEX = re.compile(r"\b(" + "|".join(re.escape(t) for t in TRIGGERS) + r")\b", re.IGNORECASE)
+TRIGGER_REGEX = _compile(TRIGGERS)
 
 
 def is_calling_tars(text: str) -> bool:
@@ -39,8 +48,8 @@ def is_reply_to_bot(bot: TeleBot, message: types.Message) -> bool:
 
 def add_trigger(new_trigger: str, triggers_set: Set[str] = TRIGGERS):
     """
-    Adds a new trigger word to the trigger set and recompiles regex.
+    Adds a new trigger stem to the trigger set and recompiles regex.
     """
     triggers_set.add(new_trigger)
     global TRIGGER_REGEX
-    TRIGGER_REGEX = re.compile(r"\b(" + "|".join(re.escape(t) for t in triggers_set) + r")\b", re.IGNORECASE)
+    TRIGGER_REGEX = _compile(triggers_set)
