@@ -18,8 +18,18 @@ from config.settings import DB_PATH, PROFILE_EMA_ALPHA
 
 
 def get_connection() -> sqlite3.Connection:
-    """Opens and returns a new SQLite connection."""
-    return sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    """Opens and returns a new SQLite connection.
+
+    WAL journaling lets readers run concurrently with a writer, which matters
+    because several daemon threads (polling, proactive, cleanup, status/photo)
+    touch the DB at once. journal_mode persists at the DB level; synchronous and
+    busy_timeout are per-connection, so they are set on every open.
+    """
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
 
 
 # ==========================================================
