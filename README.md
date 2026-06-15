@@ -330,6 +330,12 @@ sudo systemctl start tars
 
 ---
 
+## TODO / Roadmap
+
+- **Semantic recall from the `messages` table (RAG).** Conversations currently use only the rolling in-RAM context window; older messages are forgotten even though they are persisted in the `messages` table. A future improvement is retrieval over that history (keyword or embedding-based) so the bot can recall relevant older context on demand. This is intentionally deferred because retrieved snippets enter the prompt and cost tokens — it should be gated (e.g. only on long-gap replies or when the message references context that is no longer in the window).
+
+---
+
 ## License
 
 MIT License
