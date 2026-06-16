@@ -6,7 +6,7 @@ Handles Telegram bot initialization and handler registration
 import logging
 
 from telebot import TeleBot
-from telebot.types import Message
+from telebot.types import BotCommand, Message
 
 from config.settings import ALLOWED_CHAT_IDS, BOT_TOKEN
 from handlers import (
@@ -56,4 +56,30 @@ def init_bot() -> TeleBot:
         message_handler.handle_message(bot, message, ALLOWED_CHAT_IDS)
 
     logging.info("Telegram handlers registered successfully")
+
+    _register_command_menu(bot)
+
     return bot
+
+
+def _register_command_menu(bot: TeleBot):
+    """
+    Publishes the command list shown in the Telegram '/' autocomplete.
+
+    Uses the default scope, so the menu is visible to everyone in every chat,
+    including large groups (the list is a property of the bot, not per-chat or
+    per-member). Visibility here is cosmetic — access is still enforced by each
+    handler. Failures are non-fatal.
+    """
+    commands = [
+        BotCommand("help", "Описание бота и список команд"),
+        BotCommand("weather", "Погода для наблюдений: /weather <город>"),
+#         BotCommand("status", "Телеметрия спутника CubeSat"),
+#         BotCommand("photo", "Снимок с камеры CubeSat"),
+        BotCommand("stats", "Статистика бота"),
+    ]
+    try:
+        bot.set_my_commands(commands)
+        logging.info("Bot command menu registered (%d commands)", len(commands))
+    except Exception as e:
+        logging.warning(f"Failed to set bot command menu: {e}")
