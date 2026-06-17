@@ -74,8 +74,8 @@ def _register_command_menu(bot: TeleBot):
     commands = [
         BotCommand("help", "Описание бота и список команд"),
         BotCommand("weather", "Погода для наблюдений: /weather <город>"),
-#         BotCommand("status", "Телеметрия спутника CubeSat"),
-#         BotCommand("photo", "Снимок с камеры CubeSat"),
+        #         BotCommand("status", "Телеметрия спутника CubeSat"),
+        #         BotCommand("photo", "Снимок с камеры CubeSat"),
         BotCommand("stats", "Статистика бота"),
     ]
     try:
