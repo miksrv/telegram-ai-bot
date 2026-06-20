@@ -152,6 +152,7 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STARMAP_MAX_WAIT` | `120` | Seconds to wait for a finished star chart over MQTT (queued ack + render); starmap-service targets ~90–120s on a Raspberry Pi |
+| `STARMAP_IMAGE_DIR` | _(unset)_ | Shared directory the starmap-service writes charts into. `image_path` values in results are validated against it (realpath + prefix) before being read; unset disables file reads and uses the base64 fallback only |
 
 ### Logging (optional)
 
@@ -358,7 +359,7 @@ sudo systemctl start tars
 - The `/sky`, `/horizon`, `/skymap`, `/galaxy` commands only appear and work while [starmap-service](https://github.com/miksrv/starmap-service) is online — confirm it is running and connected to the same MQTT broker
 - The bot tracks availability via the retained `starmap/status` topic; check that the service publishes `{"status": "online"}` there on startup
 - If charts time out, raise `STARMAP_MAX_WAIT` and check the service can render within the budget (lower its resolution on a Raspberry Pi)
-- In `file` output mode the bot reads the rendered PNG from disk via `image_path`, so the bot and starmap-service must share the same filesystem (same host)
+- In `file` output mode the bot reads the rendered PNG from disk via `image_path`, so the bot and starmap-service must share the same filesystem (same host) **and** `STARMAP_IMAGE_DIR` must be set to the directory the service writes charts into — `image_path` is only read when it resolves inside that directory. If it is unset (the default) the bot rejects `image_path` and uses the base64 fallback only; with neither available the user sees "файл изображения недоступен"
 
 **Proactive posting not working**
 - Verify `PROACTIVE_CHAT_IDS` contains valid chat IDs that are also in `ALLOWED_CHAT_IDS`

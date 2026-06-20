@@ -3,6 +3,7 @@ command menu, and city → coordinates resolution."""
 
 import threading
 
+import handlers.starmap_handler as starmap_handler
 import services.mqtt_service as mq
 from services import weather_service
 from services.telegram_service import _build_commands
@@ -39,6 +40,16 @@ def test_invalid_status_payload_is_ignored():
     assert mq.is_starmap_online() is False
 
 
+def test_unexpected_status_value_does_not_flip_offline():
+    _reset_starmap_state()
+    mq._handle_starmap_status('{"status": "online"}')
+    assert mq.is_starmap_online() is True
+    # A malformed payload missing/with an unknown status must be ignored,
+    # not read as "offline".
+    mq._handle_starmap_status("{}")
+    assert mq.is_starmap_online() is True
+
+
 def test_listener_syncs_immediately_on_register():
     _reset_starmap_state()
     seen = []
@@ -57,6 +68,7 @@ def test_listener_fires_on_change_only():
 
     mq.register_status_listener(listener)  # immediate sync -> False
     states.clear()
+    done.clear()  # the initial sync set it; reset so wait() reflects the change
 
     mq._handle_starmap_status('{"status": "online"}')
     assert done.wait(timeout=2), "listener was not notified on change"
@@ -138,3 +150,26 @@ def test_get_coordinates_raises_for_unknown_city(monkeypatch):
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# image_path allowlist
+# ---------------------------------------------------------------------------
+
+
+def test_image_path_disabled_when_dir_unset(monkeypatch):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", "")
+    assert starmap_handler._is_allowed_image_path("/anything/chart.png") is False
+
+
+def test_image_path_inside_dir_is_allowed(monkeypatch, tmp_path):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"x")
+    assert starmap_handler._is_allowed_image_path(str(chart)) is True
+
+
+def test_image_path_traversal_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
+    assert starmap_handler._is_allowed_image_path(str(tmp_path / ".." / "etc" / "passwd")) is False
+    assert starmap_handler._is_allowed_image_path("/etc/passwd") is False

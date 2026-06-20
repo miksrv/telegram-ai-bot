@@ -92,6 +92,13 @@ STARMAP_STATUS_TOPIC = "starmap/status"
 # targets ~90–120s on the Raspberry Pi, so allow a generous margin.
 STARMAP_MAX_WAIT = int(os.getenv("STARMAP_MAX_WAIT", "120"))
 
+# Directory the starmap-service writes rendered charts into, shared with the
+# bot host. `image_path` values in starmap results are validated against this
+# directory (realpath + prefix check) before being read, so a compromised
+# service or broker cannot point the bot at arbitrary host files. When unset,
+# file reads are disabled and only the base64 fallback is used.
+STARMAP_IMAGE_DIR = os.getenv("STARMAP_IMAGE_DIR", "")
+
 # --------------------------------------------------
 # Database
 # --------------------------------------------------

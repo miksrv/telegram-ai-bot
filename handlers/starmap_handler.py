@@ -20,7 +20,7 @@ from queue import Empty
 
 from telebot import TeleBot, types
 
-from config.settings import ADMIN_IDS, STARMAP_COMMAND_TOPIC, STARMAP_MAX_WAIT
+from config.settings import ADMIN_IDS, STARMAP_COMMAND_TOPIC, STARMAP_IMAGE_DIR, STARMAP_MAX_WAIT
 from handlers.delivery import safe_delete, safe_reply
 from services.mqtt_service import (
     is_starmap_online,
@@ -107,6 +107,22 @@ def _resolve_coords(bot: TeleBot, message: types.Message, city: str):
     return None
 
 
+def _is_allowed_image_path(image_path: str) -> bool:
+    """True if `image_path` resolves inside the configured STARMAP_IMAGE_DIR.
+
+    Guards against a compromised service or broker pointing `image_path` at an
+    arbitrary host file (which the bot would otherwise read and upload to the
+    chat). When STARMAP_IMAGE_DIR is unset, file reads are disabled and only the
+    base64 fallback is used. Uses realpath on both sides so symlinks and `..`
+    segments cannot escape the allowed directory.
+    """
+    if not STARMAP_IMAGE_DIR:
+        return False
+    base = os.path.realpath(STARMAP_IMAGE_DIR)
+    resolved = os.path.realpath(image_path)
+    return resolved == base or resolved.startswith(base + os.sep)
+
+
 def _send_chart(bot: TeleBot, message: types.Message, data: dict, caption: str, filename: str) -> None:
     """Delivers the finished chart as a document, replying to the original command.
 
@@ -117,6 +133,13 @@ def _send_chart(bot: TeleBot, message: types.Message, data: dict, caption: str, 
     chat_id = message.chat.id
     image_path = data.get("image_path")
     image_b64 = data.get("image_base64")
+
+    # Reject any path outside the configured shared directory before touching
+    # the filesystem; fall back to the base64 payload instead.
+    if image_path and not _is_allowed_image_path(image_path):
+        logger.warning("Rejected starmap image_path outside STARMAP_IMAGE_DIR: %s", image_path)
+        image_path = None
+
     try:
         if image_path and os.path.exists(image_path):
             with open(image_path, "rb") as f:

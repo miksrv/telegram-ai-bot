@@ -88,6 +88,12 @@ def _handle_starmap_status(payload: str) -> None:
         logger.warning("Non-JSON starmap status payload, ignoring: %s", payload[:120])
         return
 
+    # Only the two contract values are meaningful. A malformed payload (e.g. {})
+    # must not be read as "offline" and flip the menu — ignore it.
+    if status not in ("online", "offline"):
+        logger.warning("Unexpected starmap status value, ignoring: %s", status)
+        return
+
     online = status == "online"
     with _starmap_lock:
         changed = online != _starmap_online
