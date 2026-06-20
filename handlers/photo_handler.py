@@ -9,6 +9,7 @@ from queue import Empty
 from telebot import TeleBot, types
 
 from config.settings import ADMIN_IDS
+from handlers.delivery import safe_delete, safe_reply
 from services.mqtt_service import register_request, send_command, unregister_request
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,6 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     args = message.text.split()
     overlay = len(args) > 1 and args[1].lower() in ("true", "1", "yes", "overlay")
 
-    bot.reply_to(message, f"Запрашиваю фото с CubeSat... {'с оверлеем' if overlay else ''} ⏳")
-
     # Генерируем уникальный request_id
     request_id = f"photo_{int(time.time())}"
 
@@ -45,15 +44,20 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     if not send_command(photo_cmd, topic="cubesat/command"):
         unregister_request(request_id)
-        bot.send_message(chat_id, "❌ Не удалось отправить запрос на фото.")
+        safe_reply(bot, message, "❌ Не удалось отправить запрос на фото.")
         return
+
+    # Transient "working" status message (deleted once the photo arrives), same
+    # mechanism as the starmap chart commands — see handlers/delivery.py.
+    working = safe_reply(bot, message, f"Запрашиваю фото с CubeSat... {'с оверлеем ' if overlay else ''}⏳")
 
     def wait_and_respond():
         try:
             try:
                 msg = q.get(timeout=MAX_WAIT)
             except Empty:
-                bot.send_message(chat_id, "⏰ Таймаут: фото не пришло за 45 секунд. Попробуйте позже.")
+                safe_delete(bot, chat_id, working)
+                safe_reply(bot, message, "⏰ Таймаут: фото не пришло за 45 секунд. Попробуйте позже.")
                 return
 
             payload_str = msg.get("payload")
@@ -62,22 +66,27 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
                 if data.get("status") != "SUCCESS":
                     reason = data.get("reason", "Неизвестная ошибка")
-                    bot.send_message(chat_id, f"❌ CubeSat не смог сделать фото: {reason}")
+                    safe_delete(bot, chat_id, working)
+                    safe_reply(bot, message, f"❌ CubeSat не смог сделать фото: {reason}")
                     return
 
                 # Есть фото в base64
                 photo_b64 = data.get("photo_base64")
                 if not photo_b64:
-                    bot.send_message(chat_id, "Фото сделано, но данные изображения отсутствуют 😕")
+                    safe_delete(bot, chat_id, working)
+                    safe_reply(bot, message, "Фото сделано, но данные изображения отсутствуют 😕")
                     return
 
                 # Декодируем base64 → bytes
                 photo_bytes = base64.b64decode(photo_b64)
 
-                # Отправляем фото в чат
+                # Убираем статусное сообщение и публикуем фото в ответ на команду
+                safe_delete(bot, chat_id, working)
                 bot.send_photo(
                     chat_id=chat_id,
                     photo=BytesIO(photo_bytes),
+                    reply_to_message_id=message.message_id,
+                    allow_sending_without_reply=True,
                     caption=(
                         f"Фото с CubeSat\n"
                         f"Время: {data.get('taken_at', '—')}\n"
@@ -87,10 +96,12 @@ def handle_photo(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
             except json.JSONDecodeError:
                 logger.error(f"Невалидный JSON в фото-ответе: {payload_str[:200]}...")
-                bot.send_message(chat_id, "Получен ответ, но формат некорректный 😕")
+                safe_delete(bot, chat_id, working)
+                safe_reply(bot, message, "Получен ответ, но формат некорректный 😕")
             except Exception as e:
                 logger.exception("Ошибка обработки фото из MQTT")
-                bot.send_message(chat_id, f"Ошибка при получении фото: {str(e)}")
+                safe_delete(bot, chat_id, working)
+                safe_reply(bot, message, f"Ошибка при получении фото: {str(e)}")
         finally:
             unregister_request(request_id)
 
