@@ -77,6 +77,22 @@ MQTT_PORT = 1883
 MQTT_KEEPALIVE = 60
 
 # --------------------------------------------------
+# Starmap service (MQTT star-chart generation)
+# --------------------------------------------------
+# Shared MQTT contract with the starmap-service repository (its API.md is the
+# single source of truth). The bot publishes render requests and receives a
+# `queued` acknowledgement followed by a final `ok`/`error` reply, plus a
+# retained availability status on STARMAP_STATUS_TOPIC.
+
+STARMAP_COMMAND_TOPIC = "starmap/command"
+STARMAP_RESULT_TOPIC = "starmap/result"
+STARMAP_STATUS_TOPIC = "starmap/status"
+
+# Total time to wait for a finished chart (queued ack + render). The service
+# targets ~90–120s on the Raspberry Pi, so allow a generous margin.
+STARMAP_MAX_WAIT = int(os.getenv("STARMAP_MAX_WAIT", "120"))
+
+# --------------------------------------------------
 # Database
 # --------------------------------------------------
 
