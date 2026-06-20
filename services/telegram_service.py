@@ -13,10 +13,12 @@ from handlers import (
     help_handler,
     message_handler,
     photo_handler,
+    starmap_handler,
     stats_handler,
     status_handler,
     weather_handler,
 )
+from services.mqtt_service import register_status_listener
 
 
 def init_bot() -> TeleBot:
@@ -40,6 +42,23 @@ def init_bot() -> TeleBot:
     def _weather_handler(message: Message):
         weather_handler.handle_weather(bot, message, ALLOWED_CHAT_IDS)
 
+    # --- Starmap (star-chart) command handlers ---
+    @bot.message_handler(commands=["sky"])
+    def _sky_handler(message: Message):
+        starmap_handler.handle_sky(bot, message, ALLOWED_CHAT_IDS)
+
+    @bot.message_handler(commands=["horizon"])
+    def _horizon_handler(message: Message):
+        starmap_handler.handle_horizon(bot, message, ALLOWED_CHAT_IDS)
+
+    @bot.message_handler(commands=["skymap"])
+    def _skymap_handler(message: Message):
+        starmap_handler.handle_skymap(bot, message, ALLOWED_CHAT_IDS)
+
+    @bot.message_handler(commands=["galaxy"])
+    def _galaxy_handler(message: Message):
+        starmap_handler.handle_galaxy(bot, message, ALLOWED_CHAT_IDS)
+
     # --- Stats command handler ---
     @bot.message_handler(commands=["stats"])
     def _stats_handler(message: Message):
@@ -57,12 +76,34 @@ def init_bot() -> TeleBot:
 
     logging.info("Telegram handlers registered successfully")
 
-    _register_command_menu(bot)
+    # Rebuild the '/' menu whenever the starmap-service comes up or goes down.
+    # register_status_listener also fires once immediately with the current
+    # state, so the menu is published right away regardless of MQTT timing.
+    register_status_listener(lambda online: _publish_command_menu(bot, online))
 
     return bot
 
 
-def _register_command_menu(bot: TeleBot):
+def _build_commands(starmap_online: bool):
+    """Builds the '/' autocomplete list; star-chart commands appear only when the service is up."""
+    commands = [
+        BotCommand("help", "Описание бота и список команд"),
+        BotCommand("weather", "Погода для наблюдений: /weather <город>"),
+        #         BotCommand("status", "Телеметрия спутника CubeSat"),
+        #         BotCommand("photo", "Снимок с камеры CubeSat"),
+        BotCommand("stats", "Статистика бота"),
+    ]
+    if starmap_online:
+        commands += [
+            BotCommand("sky", "Карта неба над городом сейчас: /sky <город>"),
+            BotCommand("horizon", "Небо у горизонта: /horizon <город> [сторона]"),
+            BotCommand("skymap", "Полная карта звёздного неба"),
+            BotCommand("galaxy", "Карта неба в галактических координатах"),
+        ]
+    return commands
+
+
+def _publish_command_menu(bot: TeleBot, starmap_online: bool):
     """
     Publishes the command list shown in the Telegram '/' autocomplete.
 
@@ -71,15 +112,13 @@ def _register_command_menu(bot: TeleBot):
     per-member). Visibility here is cosmetic — access is still enforced by each
     handler. Failures are non-fatal.
     """
-    commands = [
-        BotCommand("help", "Описание бота и список команд"),
-        BotCommand("weather", "Погода для наблюдений: /weather <город>"),
-#         BotCommand("status", "Телеметрия спутника CubeSat"),
-#         BotCommand("photo", "Снимок с камеры CubeSat"),
-        BotCommand("stats", "Статистика бота"),
-    ]
+    commands = _build_commands(starmap_online)
     try:
         bot.set_my_commands(commands)
-        logging.info("Bot command menu registered (%d commands)", len(commands))
+        logging.info(
+            "Bot command menu registered (%d commands, starmap_online=%s)",
+            len(commands),
+            starmap_online,
+        )
     except Exception as e:
         logging.warning(f"Failed to set bot command menu: {e}")

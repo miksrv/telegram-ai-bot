@@ -3,9 +3,39 @@ Weather Service
 Handles weather API requests
 """
 
+from typing import Tuple
+
 import requests
 
 from config.settings import WEATHER_API_KEY
+
+
+# ------------------------
+def get_coordinates(city: str) -> Tuple[float, float]:
+    """Resolves a city name to (lat, lon) via the OpenWeatherMap geocoding API.
+
+    Reuses the same provider as get_weather so a single API key covers both.
+
+    Raises:
+        ValueError: if the city cannot be found.
+        requests.RequestException: on network/API errors.
+    """
+    url = "https://api.openweathermap.org/geo/1.0/direct"
+
+    params = {
+        "q": city,
+        "limit": 1,
+        "appid": WEATHER_API_KEY,
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
+
+    data = response.json()
+    if not data:
+        raise ValueError(f"City '{city}' not found")
+
+    return float(data[0]["lat"]), float(data[0]["lon"])
 
 
 # ------------------------
