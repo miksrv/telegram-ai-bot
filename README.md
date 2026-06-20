@@ -1,6 +1,19 @@
 # TARS - Telegram AI Bot
 
-TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (powered by Groq) with a CubeSat satellite ground station interface over MQTT.
+TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (powered by Groq) with a CubeSat satellite ground station interface and an on-demand star-chart generator, both over MQTT.
+
+---
+
+## Companion services
+
+TARS is intentionally lightweight: the heavy lifting lives in separate always-on services it talks to over a shared MQTT broker (Mosquitto). Each owns its own repository and a documented MQTT contract; the bot only orchestrates the user interaction.
+
+| Service | Repository | Talks to the bot via | Powers |
+|---------|------------|----------------------|--------|
+| **starmap-service** | [miksrv/starmap-service](https://github.com/miksrv/starmap-service) | `starmap/command`, `starmap/result`, `starmap/status` | `/sky`, `/horizon`, `/skymap`, `/galaxy` star charts |
+| **cubesat-sim** | [miksrv/cubesat-sim](https://github.com/miksrv/cubesat-sim) | `cubesat/command`, `cubesat/telemetry/data`, `cubesat/payload/photo` | `/status` telemetry, `/photo` camera |
+
+Both services are optional — the bot starts and runs normally without them; the commands they power are simply unavailable. The star-chart commands additionally appear in the Telegram `/` menu only while `starmap-service` is online (tracked via its retained `starmap/status` topic). See each repository's MQTT contract (e.g. starmap-service's `API.md`) for the authoritative request/response schemas.
 
 ---
 
@@ -13,6 +26,7 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 - **Image analysis** - analyzes photos posted in the chat with astronomical context awareness
 - **CubeSat telemetry** - `/status` fetches live telemetry from a connected CubeSat via MQTT
 - **CubeSat photo** - `/photo` requests a photo from the CubeSat payload camera, received as base64 over MQTT
+- **Star charts** - `/sky`, `/horizon`, `/skymap`, `/galaxy` generate night-sky maps via the companion [starmap-service](https://github.com/miksrv/starmap-service) over MQTT; city-based commands reuse OpenWeatherMap geocoding for observer coordinates, and the chart is returned as a document
 - **Weather** - `/weather <city>` fetches current weather from OpenWeatherMap
 - **Rate limiting** - per-user sliding window rate limiter with configurable penalty cooldowns
 - **Conversation memory** - in-RAM chat history passed to the LLM as structured conversation turns, persisted to SQLite on shutdown and reloaded on restart
@@ -40,12 +54,16 @@ telegram-ai-bot/
 │   ├── message_handler.py           # Message routing: observe, trigger detection, cooldowns
 │   ├── status_handler.py            # /status command (CubeSat telemetry)
 │   ├── photo_handler.py             # /photo command (CubeSat camera)
-│   └── weather_handler.py           # /weather command
+│   ├── starmap_handler.py           # /sky, /horizon, /skymap, /galaxy (starmap-service charts)
+│   ├── delivery.py                  # Shared status-message lifecycle for MQTT result delivery
+│   ├── weather_handler.py           # /weather command
+│   ├── stats_handler.py             # /stats command (DB statistics)
+│   └── help_handler.py              # /help, /start (description + command list)
 ├── services/
-│   ├── telegram_service.py          # Bot initialization and handler registration
-│   ├── mqtt_service.py              # MQTT client, per-request response queues
+│   ├── telegram_service.py          # Bot initialization, handler registration, dynamic command menu
+│   ├── mqtt_service.py              # MQTT client, per-request response queues, starmap availability tracking
 │   ├── background_service.py        # Cleanup daemon + proactive posting daemon
-│   └── weather_service.py           # OpenWeatherMap API client
+│   └── weather_service.py           # OpenWeatherMap client (current weather + city → coordinates geocoding)
 └── utils/
     ├── triggers.py                  # Trigger word detection + reply-to-bot check
     ├── identity.py                  # Telegram identity extraction
@@ -60,7 +78,8 @@ telegram-ai-bot/
 - A Groq API key (free tier available at [console.groq.com](https://console.groq.com))
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - An OpenWeatherMap API key (free tier available)
-- An MQTT broker (e.g., Mosquitto) running on port 1883 — only required for `/status` and `/photo`
+- An MQTT broker (e.g., Mosquitto) running on port 1883 — only required for the MQTT-backed commands (`/status`, `/photo`, and the star-chart commands)
+- _(optional)_ The companion services for the MQTT-backed commands: [starmap-service](https://github.com/miksrv/starmap-service) for star charts and [cubesat-sim](https://github.com/miksrv/cubesat-sim) for CubeSat telemetry/photo
 
 ---
 
@@ -128,6 +147,13 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Cleanup daemon wake interval (30 minutes) |
 | `PROACTIVE_LOOP_INTERVAL_SECONDS` | `600` | Proactive posting daemon wake interval (10 minutes) |
 
+### Star charts (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STARMAP_MAX_WAIT` | `120` | Seconds to wait for a finished star chart over MQTT (queued ack + render); starmap-service targets ~90–120s on a Raspberry Pi |
+| `STARMAP_IMAGE_DIR` | _(unset)_ | Shared directory the starmap-service writes charts into. `image_path` values in results are validated against it (realpath + prefix) before being read; unset disables file reads and uses the base64 fallback only |
+
 ### Logging (optional)
 
 | Variable | Default | Description |
@@ -155,9 +181,15 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `tars <message>` | All allowed chats | Mention the bot to start a conversation |
 | `/status` | Allowed chats | Fetch live CubeSat telemetry |
 | `/photo [overlay]` | Allowed chats | Request a photo from the CubeSat camera |
+| `/sky <city>` | Allowed chats | Star chart of the sky overhead at a city, right now |
+| `/horizon <city> [direction]` | Allowed chats | Sky near the horizon; direction one of N/NE/E/SE/S/SW/W/NW (RU aliases accepted), default S |
+| `/skymap` | Allowed chats | Full all-sky star chart (no coordinates needed) |
+| `/galaxy` | Allowed chats | All-sky chart in galactic coordinates |
 | `/weather <city>` | Allowed chats | Get current weather for a city |
 | `/stats` | Allowed chats / admin DM | Aggregate database statistics (users, interactions, stored messages) in Russian |
 | `/help`, `/start` | Allowed chats / DM | Short bot description and command list in Russian |
+
+The star-chart commands (`/sky`, `/horizon`, `/skymap`, `/galaxy`) require the [starmap-service](https://github.com/miksrv/starmap-service) to be online; when it is down they are hidden from the `/` menu and a "service unavailable" notice is returned instead.
 
 The bot also responds when users reply directly to any of its messages. When the reply targets a bot message that is no longer in the rolling chat memory (e.g. an older message or a proactive post), the replied-to text is surfaced to the LLM so it answers the exact message being referenced.
 
@@ -193,16 +225,22 @@ The bot connects to a local MQTT broker (`localhost:1883`) and uses the followin
 | `cubesat/command` | Publish | Send commands to the CubeSat OBC |
 | `cubesat/telemetry/data` | Subscribe | Receive telemetry responses |
 | `cubesat/payload/photo` | Subscribe | Receive photo responses |
+| `starmap/command` | Publish | Send star-chart render requests to starmap-service |
+| `starmap/result` | Subscribe | Receive `queued` / `ok` / `error` replies (routed by `request_id`) |
+| `starmap/status` | Subscribe | starmap-service availability (`online` / `offline`, retained + Last Will) |
 
 Command format (JSON):
 ```json
 {"command": "get_telemetry", "request_id": "1741000000"}
 {"command": "take_photo",    "request_id": "photo_1741000000", "params": {"overlay": false}}
+{"request_id": "starmap_zenith_1741000000_1", "map_type": "zenith", "observer": {"lat": 55.75, "lon": 37.62}}
 ```
 
-Responses are routed back to the originating command via a per-request queue keyed by `request_id`, so concurrent `/status` and `/photo` requests never collide, and neither command blocks the Telegram polling thread (each waits for its reply in a background daemon thread). On an unexpected disconnect the client automatically reconnects with exponential backoff (5s → capped at 300s, up to 10 attempts).
+Responses are routed back to the originating command via a per-request queue keyed by `request_id`, so concurrent requests never collide, and no command blocks the Telegram polling thread (each waits for its reply in a background daemon thread). The CubeSat contract returns a single reply per request; the starmap contract returns **two** (a `queued` acknowledgement followed by a final `ok`/`error`), so its queue is registered unbounded. On an unexpected disconnect the client automatically reconnects with exponential backoff (5s → capped at 300s, up to 10 attempts).
 
-If no MQTT broker is available, the bot starts normally — only `/status` and `/photo` will be non-functional.
+The bot also subscribes to the retained `starmap/status` topic to track whether starmap-service is up: the four star-chart commands are added to or removed from the Telegram `/` menu accordingly, and the service's Last Will marks it `offline` if it dies unexpectedly.
+
+If no MQTT broker is available, the bot starts normally — only the MQTT-backed commands (`/status`, `/photo`, and the star-chart commands) will be non-functional.
 
 ---
 
@@ -314,8 +352,14 @@ sudo systemctl start tars
 - Default broker is `localhost:1883` — adjust `MQTT_BROKER` / `MQTT_PORT` in `settings.py` if needed
 
 **`/status` or `/photo` times out**
-- Confirm the CubeSat OBC is powered on and connected to the same MQTT broker
+- Confirm the CubeSat OBC (or [cubesat-sim](https://github.com/miksrv/cubesat-sim)) is powered on and connected to the same MQTT broker
 - Check that it publishes responses to the correct topics with a matching `request_id`
+
+**Star-chart commands missing from the menu / "service unavailable"**
+- The `/sky`, `/horizon`, `/skymap`, `/galaxy` commands only appear and work while [starmap-service](https://github.com/miksrv/starmap-service) is online — confirm it is running and connected to the same MQTT broker
+- The bot tracks availability via the retained `starmap/status` topic; check that the service publishes `{"status": "online"}` there on startup
+- If charts time out, raise `STARMAP_MAX_WAIT` and check the service can render within the budget (lower its resolution on a Raspberry Pi)
+- In `file` output mode the bot reads the rendered PNG from disk via `image_path`, so the bot and starmap-service must share the same filesystem (same host) **and** `STARMAP_IMAGE_DIR` must be set to the directory the service writes charts into — `image_path` is only read when it resolves inside that directory. If it is unset (the default) the bot rejects `image_path` and uses the base64 fallback only; with neither available the user sees "файл изображения недоступен"
 
 **Proactive posting not working**
 - Verify `PROACTIVE_CHAT_IDS` contains valid chat IDs that are also in `ALLOWED_CHAT_IDS`

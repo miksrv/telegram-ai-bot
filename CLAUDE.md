@@ -26,11 +26,13 @@ handlers/
   weather_handler.py             # /weather: validates input, delegates to services/weather_service.py
   stats_handler.py               # /stats: aggregate DB statistics (db.get_db_stats), Russian output
   help_handler.py                # /help, /start: static bot description + command list (Russian)
+  starmap_handler.py             # /sky, /horizon, /skymap, /galaxy: requests star charts from starmap-service via MQTT
+  delivery.py                    # Shared status-message lifecycle (safe_reply/safe_delete) for MQTT result delivery (/photo + starmap)
 services/
   telegram_service.py            # Bot init, handler registration
-  mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt)
+  mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt); tracks starmap-service availability from its retained status topic + notifies listeners
   background_service.py          # Cleanup daemon + proactive posting daemon threads
-  weather_service.py             # OpenWeatherMap API client (used by weather_handler)
+  weather_service.py             # OpenWeatherMap client: get_weather() (used by weather_handler) + get_coordinates() (city → lat/lon, reused by starmap commands)
 utils/
   triggers.py                    # Trigger word detection + is_reply_to_bot
   identity.py                    # Extracts Telegram user identity dict from message
@@ -58,10 +60,20 @@ utils/
 2. Spawns a background daemon thread that waits up to 30s for the matching reply on `cubesat/telemetry/data` (polling thread is **not** blocked)
 3. `format_telemetry_for_telegram` renders Markdown response; the queue is unregistered when done
 
+### Star charts (/sky, /horizon, /skymap, /galaxy)
+Integration with the separate **starmap-service** repo (its `API.md` is the shared, authoritative MQTT contract — do not change it unilaterally).
+1. `starmap_handler` gates each command on access + `is_starmap_online()` (refuses with a Russian "service unavailable" message when the service is down)
+2. For observer-bound charts (`/sky` → `zenith`, `/horizon` → `horizon`) the city argument is resolved to coordinates via `weather_service.get_coordinates()` (OpenWeatherMap geocoding). `/skymap` (`full`) and `/galaxy` (`galactic`) need no coordinates. `/horizon` accepts an optional trailing compass direction (RU/EN aliases → `N..NW`, default `S`)
+3. Registers a per-request queue with `register_request(request_id, maxsize=0)` — **unbounded**, because the contract delivers **two** replies per request: a `queued` acknowledgement (with `position`) then a final `ok`/`error`. Publishes `{request_id, map_type, observer?, options?}` to `starmap/command`
+4. A background daemon thread loops on the queue until `STARMAP_MAX_WAIT` (default 120s). On the first `queued` ack it posts a transient "Начал процесс генерации карты…" status message **as a reply to the command**. On `ok` it deletes that status message and posts the chart **as a document** (`send_document`, not a compressed photo) replying to the command — reading `image_path` from the shared filesystem (only if it resolves inside `STARMAP_IMAGE_DIR` via `_is_allowed_image_path`; paths outside it are rejected and logged, guarding against a compromised service/broker reading arbitrary host files), falling back to decoding `image_base64`. On `error`/timeout it deletes the status message and replies with the message. The status-message lifecycle (`safe_reply`/`safe_delete`) lives in `handlers/delivery.py` and is shared with `/photo`
+5. **Dynamic command menu:** `mqtt_service` subscribes to the retained `starmap/status` topic and tracks online/offline; `telegram_service` registers a status listener that rebuilds `set_my_commands` so the four chart commands appear in the Telegram `/` menu only while the service is online (and disappear via the service's Last Will when it dies)
+
+> Gap noted in the service: `map_type: optic` (object through a given optic) requires explicit `target.ra`/`target.dec`; resolving an object name (e.g. `M31`) to coordinates is not implemented server-side, so no `/optic`-style command is exposed yet.
+
 ### CubeSat photo (/photo)
 1. `photo_handler.handle_photo` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "take_photo", "request_id": ..., "params": {"overlay": ...}}` to `cubesat/command`
-2. Spawns a background daemon thread that waits up to 45s for the matching reply on `cubesat/payload/photo` (polling thread is **not** blocked)
-3. Decodes base64 image, sends via `bot.send_photo`; the queue is unregistered when done
+2. Posts a transient "Запрашиваю фото…" status message as a reply to the command, then spawns a background daemon thread that waits up to 45s for the matching reply on `cubesat/payload/photo` (polling thread is **not** blocked)
+3. On success: deletes the status message and decodes the base64 image, sending it **as a photo** (`bot.send_photo`, compressed) replying to the command; on failure/timeout it deletes the status message and replies with the reason. Uses the same `safe_reply`/`safe_delete` lifecycle helpers (`handlers/delivery.py`) as the starmap commands — the only difference is photo vs document. The queue is unregistered when done
 
 ## Configuration (.env)
 
@@ -84,6 +96,8 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 Other optional variables:
 ```env
 LOG_LEVEL=          # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
+STARMAP_MAX_WAIT=   # Seconds to wait for a finished star chart (default: 120)
+STARMAP_IMAGE_DIR=  # Shared dir for chart files; image_path is validated against it (default: unset → base64 only)
 ```
 
 `PROACTIVE_CHAT_IDS` is intersected with `ALLOWED_CHAT_IDS` at load time; IDs outside the allowed set are dropped with a warning.
@@ -149,6 +163,9 @@ LOG_LEVEL=          # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
 | `cubesat/command` | Publish | Send commands to CubeSat |
 | `cubesat/telemetry/data` | Subscribe | Receive telemetry responses |
 | `cubesat/payload/photo` | Subscribe | Receive photo responses |
+| `starmap/command` | Publish | Send chart render requests to starmap-service |
+| `starmap/result` | Subscribe | Receive `queued`/`ok`/`error` replies (routed by `request_id`) |
+| `starmap/status` | Subscribe | starmap-service availability (`online`/`offline`, retained + LWT); drives the dynamic command menu |
 
 The MQTT client (`mqtt_service`) runs `loop_forever` in a background daemon thread. On an unexpected disconnect, `on_disconnect` spawns a reconnect loop with exponential backoff (5s → cap 300s, up to 10 retries); a clean disconnect from `stop_mqtt()` does not trigger reconnects. Responses are routed only when the payload is valid JSON carrying a known `request_id`.
 

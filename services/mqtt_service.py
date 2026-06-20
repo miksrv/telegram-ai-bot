@@ -11,7 +11,12 @@ from queue import Empty, Full, Queue
 
 import paho.mqtt.client as mqtt
 
-from config.settings import MQTT_BROKER, MQTT_PORT
+from config.settings import (
+    MQTT_BROKER,
+    MQTT_PORT,
+    STARMAP_RESULT_TOPIC,
+    STARMAP_STATUS_TOPIC,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,21 +28,93 @@ mqtt_client = mqtt.Client(client_id="telegram-ai-bot")
 _pending_lock = threading.Lock()
 _pending: dict[str, Queue] = {}
 
+# Availability of the starmap-service, tracked from its retained status topic.
+# Starts as "offline" until a status message proves otherwise.
+_starmap_lock = threading.Lock()
+_starmap_online = False
+_status_listeners: list = []
 
-def register_request(request_id: str) -> Queue:
+
+def register_request(request_id: str, maxsize: int = 1) -> Queue:
     """Creates and registers a private response queue for the given request_id.
 
-    Must be called before send_command to avoid a race where the CubeSat
+    Must be called before send_command to avoid a race where the service
     replies before the caller starts waiting.
 
+    Args:
+        request_id: correlation id echoed back in every reply.
+        maxsize: queue capacity. Use 1 for single-reply services (CubeSat);
+            use 0 (unbounded) for multi-reply contracts such as starmap, which
+            sends a `queued` acknowledgement followed by a final `ok`/`error`.
+
     Returns:
-        A Queue that will receive exactly one dict {topic, payload, timestamp}
-        when the matching response arrives.
+        A Queue that receives dicts {topic, payload, timestamp} as matching
+        responses arrive.
     """
-    q: Queue = Queue(maxsize=1)
+    q: Queue = Queue(maxsize=maxsize)
     with _pending_lock:
         _pending[request_id] = q
     return q
+
+
+def is_starmap_online() -> bool:
+    """Returns the last known availability of the starmap-service."""
+    with _starmap_lock:
+        return _starmap_online
+
+
+def register_status_listener(callback) -> None:
+    """Registers a callback invoked with the new bool state on starmap status changes.
+
+    The callback is also invoked once immediately with the current state, so a
+    listener registered after the retained status has already arrived is not
+    left out of sync.
+    """
+    with _starmap_lock:
+        _status_listeners.append(callback)
+        current = _starmap_online
+    try:
+        callback(current)
+    except Exception:
+        logger.exception("Starmap status listener failed on initial sync")
+
+
+def _handle_starmap_status(payload: str) -> None:
+    """Updates cached starmap availability and notifies listeners on change."""
+    global _starmap_online
+    try:
+        status = json.loads(payload).get("status")
+    except (json.JSONDecodeError, AttributeError):
+        logger.warning("Non-JSON starmap status payload, ignoring: %s", payload[:120])
+        return
+
+    # Only the two contract values are meaningful. A malformed payload (e.g. {})
+    # must not be read as "offline" and flip the menu — ignore it.
+    if status not in ("online", "offline"):
+        logger.warning("Unexpected starmap status value, ignoring: %s", status)
+        return
+
+    online = status == "online"
+    with _starmap_lock:
+        changed = online != _starmap_online
+        _starmap_online = online
+        listeners = list(_status_listeners)
+
+    logger.info("Starmap service status: %s", "online" if online else "offline")
+
+    if not changed:
+        return
+
+    def _notify():
+        for cb in listeners:
+            try:
+                cb(online)
+            except Exception:
+                logger.exception("Starmap status listener failed")
+
+    # Run listeners off the MQTT network loop so a slow callback (e.g. a
+    # set_my_commands HTTP call) never blocks keepalive pings.
+    threading.Thread(target=_notify, daemon=True).start()
 
 
 def unregister_request(request_id: str):
@@ -51,6 +128,9 @@ def on_connect(client, userdata, flags, rc):
         logger.info("Connected to MQTT broker")
         client.subscribe("cubesat/telemetry/data", qos=1)
         client.subscribe("cubesat/payload/photo", qos=1)
+        # Starmap render results plus its retained availability status.
+        client.subscribe(STARMAP_RESULT_TOPIC, qos=1)
+        client.subscribe(STARMAP_STATUS_TOPIC, qos=1)
     else:
         logger.error(f"Failed to connect to MQTT, rc={rc}")
 
@@ -59,6 +139,11 @@ def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode("utf-8")
         topic = msg.topic
+
+        # Starmap availability is a standalone (retained) status, not a request reply.
+        if topic == STARMAP_STATUS_TOPIC:
+            _handle_starmap_status(payload)
+            return
 
         try:
             data = json.loads(payload)

@@ -1,4 +1,4 @@
-name: CI
+name: Checks
 
 on:
   push:
@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+
+# Least-privilege token: the workflow only reads the repository.
+permissions:
+  contents: read
+
+# Cancel a running check when new commits are pushed to the same ref/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-and-test:
