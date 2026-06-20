@@ -59,7 +59,7 @@ if __name__ == "__main__":
     logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
 
     if not start_mqtt(background=True):
-        logging.warning("MQTT unavailable — /status and /photo commands will not work")
+        logging.warning("MQTT unavailable — /status, /photo and star-chart commands will not work")
 
     bot = init_bot()
 

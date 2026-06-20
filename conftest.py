@@ -18,3 +18,11 @@ if "telebot" not in sys.modules:
     _telebot_stub = MagicMock()
     sys.modules["telebot"] = _telebot_stub
     sys.modules["telebot.types"] = _telebot_stub.types
+
+# Stub out paho-mqtt the same way for environments without the full venv, so
+# services.mqtt_service can be imported in tests. In CI the real package is used.
+if "paho" not in sys.modules:
+    _paho_stub = MagicMock()
+    sys.modules["paho"] = _paho_stub
+    sys.modules["paho.mqtt"] = _paho_stub.mqtt
+    sys.modules["paho.mqtt.client"] = _paho_stub.mqtt.client
