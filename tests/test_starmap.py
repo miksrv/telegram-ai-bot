@@ -173,3 +173,68 @@ def test_image_path_traversal_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
     assert starmap_handler._is_allowed_image_path(str(tmp_path / ".." / "etc" / "passwd")) is False
     assert starmap_handler._is_allowed_image_path("/etc/passwd") is False
+
+
+# ---------------------------------------------------------------------------
+# Delete-after-send
+# ---------------------------------------------------------------------------
+
+
+class _FakeBot:
+    def __init__(self):
+        self.sent = 0
+
+    def send_document(self, *args, **kwargs):
+        self.sent += 1
+
+    def reply_to(self, *args, **kwargs):
+        return None
+
+
+class _FakeMessage:
+    def __init__(self, chat_id=1, message_id=2):
+        self.chat = type("Chat", (), {"id": chat_id})()
+        self.message_id = message_id
+
+
+def test_chart_file_deleted_after_send_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(starmap_handler, "STARMAP_DELETE_AFTER_SEND", True)
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"img")
+
+    bot = _FakeBot()
+    starmap_handler._send_chart(bot, _FakeMessage(), {"image_path": str(chart)}, "cap", "sky.png")
+
+    assert bot.sent == 1
+    assert not chart.exists()
+
+
+def test_chart_file_kept_when_flag_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(starmap_handler, "STARMAP_DELETE_AFTER_SEND", False)
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"img")
+
+    bot = _FakeBot()
+    starmap_handler._send_chart(bot, _FakeMessage(), {"image_path": str(chart)}, "cap", "sky.png")
+
+    assert bot.sent == 1
+    assert chart.exists()
+
+
+def test_chart_file_kept_when_send_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(starmap_handler, "STARMAP_IMAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(starmap_handler, "STARMAP_DELETE_AFTER_SEND", True)
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"img")
+
+    class _FailingBot(_FakeBot):
+        def send_document(self, *args, **kwargs):
+            raise RuntimeError("telegram down")
+
+    bot = _FailingBot()
+    starmap_handler._send_chart(bot, _FakeMessage(), {"image_path": str(chart)}, "cap", "sky.png")
+
+    # Send failed → file must survive so the result isn't lost.
+    assert chart.exists()

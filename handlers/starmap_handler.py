@@ -20,7 +20,13 @@ from queue import Empty
 
 from telebot import TeleBot, types
 
-from config.settings import ADMIN_IDS, STARMAP_COMMAND_TOPIC, STARMAP_IMAGE_DIR, STARMAP_MAX_WAIT
+from config.settings import (
+    ADMIN_IDS,
+    STARMAP_COMMAND_TOPIC,
+    STARMAP_DELETE_AFTER_SEND,
+    STARMAP_IMAGE_DIR,
+    STARMAP_MAX_WAIT,
+)
 from handlers.delivery import safe_delete, safe_reply
 from services.mqtt_service import (
     is_starmap_online,
@@ -123,6 +129,19 @@ def _is_allowed_image_path(image_path: str) -> bool:
     return resolved == base or resolved.startswith(base + os.sep)
 
 
+def _delete_chart_file(image_path: str) -> None:
+    """Best-effort removal of a delivered chart file (errors only logged).
+
+    Called after a successful Telegram delivery when STARMAP_DELETE_AFTER_SEND is
+    enabled, so rendered charts don't accumulate in the shared STARMAP_IMAGE_DIR.
+    """
+    try:
+        os.remove(image_path)
+        logger.debug("Deleted delivered starmap chart: %s", image_path)
+    except OSError:
+        logger.warning("Could not delete delivered starmap chart: %s", image_path, exc_info=True)
+
+
 def _send_chart(bot: TeleBot, message: types.Message, data: dict, caption: str, filename: str) -> None:
     """Delivers the finished chart as a document, replying to the original command.
 
@@ -151,6 +170,10 @@ def _send_chart(bot: TeleBot, message: types.Message, data: dict, caption: str, 
                     visible_file_name=filename,
                     allow_sending_without_reply=True,
                 )
+            # Only the just-delivered file is removed; its path is already
+            # validated against STARMAP_IMAGE_DIR above.
+            if STARMAP_DELETE_AFTER_SEND:
+                _delete_chart_file(image_path)
             return
         if image_b64:
             bot.send_document(
