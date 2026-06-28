@@ -99,6 +99,13 @@ STARMAP_MAX_WAIT = int(os.getenv("STARMAP_MAX_WAIT", "120"))
 # file reads are disabled and only the base64 fallback is used.
 STARMAP_IMAGE_DIR = os.getenv("STARMAP_IMAGE_DIR", "")
 
+# When true, the bot deletes the rendered chart file from STARMAP_IMAGE_DIR after
+# it has been successfully delivered to Telegram, so charts don't accumulate on
+# disk. Only applies to the `file` mode (image_path); the base64 fallback has no
+# file to remove. Deletion is best-effort and only the file that was just sent is
+# removed (path already validated against STARMAP_IMAGE_DIR). (default: false)
+STARMAP_DELETE_AFTER_SEND = os.getenv("STARMAP_DELETE_AFTER_SEND", "false").lower() == "true"
+
 # --------------------------------------------------
 # Database
 # --------------------------------------------------
