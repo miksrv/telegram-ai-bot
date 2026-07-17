@@ -1,6 +1,9 @@
 from database.db import (
+    get_reply_candidate,
     get_user_profile,
     increment_message_count,
+    mark_message_replied,
+    save_message,
     update_user_notes,
     update_user_profile,
 )
@@ -114,3 +117,35 @@ def test_update_notes_fully_replaces():
     profile = get_user_profile(_TEST_USER)
     assert profile["notes"] == "second notes"
     assert "first" not in profile["notes"]
+
+
+# --------------------------------------------------
+# get_reply_candidate / mark_message_replied
+# --------------------------------------------------
+
+# Each test below uses its own chat ID to stay isolated from the others.
+
+
+def test_reply_candidate_excludes_short_messages():
+    chat_id = -9_000_101
+    save_message(chat_id, _TEST_USER, 1, "CI", "ci_test", "два слова")
+    candidate = get_reply_candidate(chat_id, min_word_count=6)
+    assert candidate is None
+
+
+def test_reply_candidate_returns_qualifying_message():
+    chat_id = -9_000_102
+    save_message(chat_id, _TEST_USER, 2, "CI", "ci_test", "это достаточно длинное сообщение для ответа бота")
+    candidate = get_reply_candidate(chat_id, min_word_count=6)
+    assert candidate is not None
+    assert candidate["telegram_message_id"] == 2
+    assert "длинное сообщение" in candidate["text"]
+
+
+def test_marked_message_is_never_picked_again():
+    chat_id = -9_000_103
+    save_message(chat_id, _TEST_USER, 3, "CI", "ci_test", "это единственное достаточно длинное сообщение здесь")
+    candidate = get_reply_candidate(chat_id, min_word_count=6)
+    assert candidate is not None
+    mark_message_replied(candidate["id"])
+    assert get_reply_candidate(chat_id, min_word_count=6) is None

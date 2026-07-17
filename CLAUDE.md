@@ -15,7 +15,7 @@ core/
   prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE)
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
-  proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling)
+  proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the once-daily direct reply
 database/
   db.py                          # SQLite: user_profile, chat_memory, user_memory, messages tables; all CRUD + memory persistence (flush_memory/load_memory)
   profile_repo.py                # Re-exports db.py functions used by brain.py
@@ -54,6 +54,14 @@ utils/
 3. On approval: `brain.post_proactively()` fetches recent messages → Groq API → JSON `{reply}`
 4. On success: `bot.send_message()` sends; `memory.add_bot_message()` records the post as a standalone assistant turn in chat memory (so follow-ups/replies have context); `proactive_engine.record_post()` advances schedule (random `PROACTIVE_NEXT_MIN/MAX_SECONDS` window)
 5. On failure (no content or exception): `proactive_engine.reschedule_failed()` pushes `next_attempt_at` forward without consuming the daily budget
+
+### Proactive direct reply (background, once daily)
+In addition to the general posts above, the same loop iteration (when a general post did not fire) can address one specific past message directly, as a Telegram reply.
+1. `proactive_engine.should_post_reply()` checks its own schedule (`next_reply_attempt_at`, randomized once per UTC day within `PROACTIVE_REPLY_MIN/MAX_DELAY_SECONDS` of midnight), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`, default 1), and the shared `PROACTIVE_MIN_GAP_SECONDS` gap against the last proactive action (post or reply)
+2. Target selection is pure SQL/Python, not an LLM call: `database.db.get_reply_candidate()` picks a random message from the `messages` table with `word_count >= PROACTIVE_REPLY_MIN_WORD_COUNT` (screens out short, e.g. two-word, messages) and `replied_at = 0` (never used before). Photo messages never qualify — the observe block only ever saves `content_type == "text"` rows, so nothing with an image is in the table to begin with
+3. On a candidate: `brain.post_proactive_reply()` fetches recent context, builds a prompt naming the target author/text, and makes a single Groq API call → JSON `{reply}`
+4. On success: `bot.send_message(..., reply_to_message_id=...)` sends it as a genuine Telegram reply to the target; `memory.add_bot_message()` records it in chat memory; `database.db.mark_message_replied()` flags the target row so it is never picked again; `proactive_engine.record_reply()` consumes the daily budget
+5. On failure (no content or exception): `proactive_engine.reschedule_reply_failed()` retries later without consuming the daily budget, and the target message is not marked as replied
 
 ### CubeSat telemetry (/status)
 1. `status_handler.handle_status` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "get_telemetry", "request_id": ...}` to `cubesat/command`

@@ -172,3 +172,47 @@ def test_analyze_image_prunes_history_and_builds_multimodal_turn(monkeypatch):
     history = brain_mod.memory.get_chat_history(chat_id)
     assert history[-2] == (user_id, "user", "[изображение] что это за объект")
     assert history[-1] == (user_id, "assistant", "наблюдение")
+
+
+# --------------------------------------------------
+# post_proactive_reply — once-daily direct reply to a specific message
+# --------------------------------------------------
+
+
+def test_post_proactive_reply_targets_selected_message(monkeypatch):
+    """The target message/author picked by the caller reach the prompt in a single LLM call."""
+    from core import brain as brain_mod
+
+    captured = {}
+
+    def fake_get_recent_messages(chat_id, limit):
+        return [{"first_name": "Иван", "username": "ivan", "text": f"сообщение {i}"} for i in range(limit)]
+
+    monkeypatch.setattr(brain_mod, "get_recent_messages", fake_get_recent_messages)
+
+    def fake_call(self, model, messages, **kw):
+        captured["prompt"] = messages[0]["content"]
+        captured["call_count"] = captured.get("call_count", 0) + 1
+        return '{"reply": "ответ по существу"}'
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", fake_call)
+
+    reply = brain_mod.brain.post_proactive_reply(
+        chat_id=123,
+        target_text="Кто-нибудь наблюдал вчера туманность Ориона в телескоп?",
+        target_author="Мария",
+    )
+
+    assert reply == "ответ по существу"
+    assert captured["call_count"] == 1  # exactly one API call — no separate selection call
+    assert "Мария" in captured["prompt"]
+    assert "Кто-нибудь наблюдал вчера туманность Ориона в телескоп?" in captured["prompt"]
+
+
+def test_post_proactive_reply_returns_none_on_insufficient_context(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "get_recent_messages", lambda chat_id, limit: [])
+
+    reply = brain_mod.brain.post_proactive_reply(chat_id=123, target_text="что-то", target_author="Кто-то")
+    assert reply is None

@@ -6,9 +6,10 @@ All user profile logic is centralized.
 import json
 import logging
 import os
+import random
 import sqlite3
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from config.settings import DB_PATH, PROFILE_EMA_ALPHA
 
@@ -80,10 +81,15 @@ def _init_db():
                 username            TEXT    DEFAULT '',
                 text                TEXT    NOT NULL,
                 word_count          INTEGER NOT NULL,
-                timestamp           INTEGER NOT NULL
+                timestamp           INTEGER NOT NULL,
+                replied_at          INTEGER NOT NULL DEFAULT 0
             );
         """
         )
+        # Migration for pre-existing databases created before replied_at existed.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        if "replied_at" not in existing_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN replied_at INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
@@ -416,6 +422,55 @@ def get_latest_message_timestamp(chat_id: int) -> int:
         return row[0] if row else 0
     finally:
         conn.close()
+
+
+def get_reply_candidate(chat_id: int, min_word_count: int, pool_size: int = 30) -> Optional[Dict[str, Any]]:
+    """
+    Picks a message eligible for the once-daily proactive reply feature.
+
+    Selection is pure SQL/Python — no LLM call is spent choosing a target, so the
+    single subsequent API call is spent entirely on generating the reply text.
+    Candidates must meet `min_word_count` (screens out too-short messages) and not
+    have been used for a reply before (`replied_at = 0`); photo messages never
+    qualify since the `messages` table only ever stores content_type == "text" rows.
+    One is picked at random from the most recent `pool_size` qualifying rows so the
+    same message isn't always chosen deterministically.
+
+    Returns a dict with id, telegram_message_id, first_name, username, text, or
+    None if no qualifying candidate exists.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, telegram_message_id, first_name, username, text
+            FROM messages
+            WHERE chat_id = ? AND word_count >= ? AND replied_at = 0
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (chat_id, min_word_count, pool_size),
+        ).fetchall()
+        if not rows:
+            return None
+
+        row = random.choice(rows)
+        return {
+            "id": row[0],
+            "telegram_message_id": row[1],
+            "first_name": row[2],
+            "username": row[3],
+            "text": row[4],
+        }
+    finally:
+        conn.close()
+
+
+def mark_message_replied(message_id: int):
+    """Marks a message as used for the once-daily proactive reply so it is never picked again."""
+    with get_connection() as conn:
+        conn.execute("UPDATE messages SET replied_at = ? WHERE id = ?", (int(time.time()), message_id))
+        conn.commit()
 
 
 def purge_expired_messages(ttl_seconds: int) -> int:

@@ -8,10 +8,10 @@ import logging
 import threading
 import time
 
-from config.settings import MESSAGE_TTL_SECONDS
+from config.settings import MESSAGE_TTL_SECONDS, PROACTIVE_REPLY_ENABLED
 from core.brain import brain
 from core.memory import memory
-from database.db import purge_expired_messages
+from database.db import mark_message_replied, purge_expired_messages
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,45 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
     return t
 
 
+def _try_proactive_reply(bot, engine, chat_id: int, candidate: dict):
+    """Generates and sends the once-daily direct reply to `candidate`, a message
+    dict from ProactiveEngine.should_post_reply (id, telegram_message_id,
+    first_name, username, text). Isolated in its own try/except so a failure
+    reschedules via reschedule_reply_failed, not the general post's reschedule_failed.
+    """
+    try:
+        reply = brain.post_proactive_reply(
+            chat_id,
+            target_text=candidate["text"],
+            target_author=candidate["first_name"] or candidate["username"] or "участник чата",
+        )
+
+        if not reply:
+            engine.reschedule_reply_failed(chat_id)
+            logger.warning(f"Proactive reply skipped (no content) for chat={chat_id}")
+            return
+
+        bot.send_message(chat_id, reply, reply_to_message_id=candidate["telegram_message_id"])
+        memory.add_bot_message(chat_id, reply)
+        engine.record_reply(chat_id)
+
+        try:
+            mark_message_replied(candidate["id"])
+        except Exception as e:
+            logger.exception(
+                f"Failed to mark message as replied (chat={chat_id}, message_id={candidate['telegram_message_id']}): {e}"
+            )
+
+        logger.info(f"Proactive reply sent to chat={chat_id} (message_id={candidate['telegram_message_id']})")
+
+    except Exception as e:
+        logger.exception(f"Proactive reply error (chat={chat_id}): {e}")
+        try:
+            engine.reschedule_reply_failed(chat_id)
+        except Exception:
+            pass
+
+
 def start_proactive_loop(
     bot,
     allowed_chat_ids: set,
@@ -61,21 +100,29 @@ def start_proactive_loop(
         while True:
             for chat_id in allowed_chat_ids:
                 try:
-                    if not engine.should_post(chat_id):
+                    if engine.should_post(chat_id):
+                        reply = brain.post_proactively(chat_id)
+
+                        if reply:
+                            bot.send_message(chat_id, reply)
+                            # Record the proactive post in chat memory so that follow-ups
+                            # and replies to it have the right context (avoids hallucination).
+                            memory.add_bot_message(chat_id, reply)
+                            engine.record_post(chat_id)
+                            logger.info(f"Proactive post sent to chat={chat_id}")
+                        else:
+                            engine.reschedule_failed(chat_id)
+                            logger.warning(f"Proactive post skipped (no content) for chat={chat_id}")
                         continue
 
-                    reply = brain.post_proactively(chat_id)
+                    if not PROACTIVE_REPLY_ENABLED:
+                        continue
 
-                    if reply:
-                        bot.send_message(chat_id, reply)
-                        # Record the proactive post in chat memory so that follow-ups
-                        # and replies to it have the right context (avoids hallucination).
-                        memory.add_bot_message(chat_id, reply)
-                        engine.record_post(chat_id)
-                        logger.info(f"Proactive post sent to chat={chat_id}")
-                    else:
-                        engine.reschedule_failed(chat_id)
-                        logger.warning(f"Proactive post skipped (no content) for chat={chat_id}")
+                    candidate = engine.should_post_reply(chat_id)
+                    if not candidate:
+                        continue
+
+                    _try_proactive_reply(bot, engine, chat_id, candidate)
 
                 except Exception as e:
                     logger.exception(f"Proactive loop error (chat={chat_id}): {e}")
