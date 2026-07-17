@@ -2,6 +2,7 @@ from core.prompts import (
     build_general_prompt,
     build_general_system_prompt,
     build_proactive_prompt,
+    build_proactive_reply_prompt,
     build_reply_only_prompt,
     build_reply_only_system_prompt,
 )
@@ -124,3 +125,28 @@ def test_proactive_prompt_context_size_matches():
     lines = ["a", "b", "c"]
     result = build_proactive_prompt(lines, "2024-01-01 00:00 UTC")
     assert "3" in result  # context_size=3 appears in the prompt
+
+
+# --------------------------------------------------
+# build_proactive_reply_prompt
+# --------------------------------------------------
+
+
+def test_proactive_reply_prompt_contains_target():
+    result = build_proactive_reply_prompt(
+        ["Алексей: привет"], "Мария", "Что за туманность видно сегодня вечером?", "2024-01-01 12:00 UTC"
+    )
+    assert "Мария" in result
+    assert "Что за туманность видно сегодня вечером?" in result
+    assert "Алексей: привет" in result
+
+
+def test_proactive_reply_prompt_contains_reply_field():
+    result = build_proactive_reply_prompt(["User: test"], "User", "test target", "2024-01-01 12:00 UTC")
+    assert '"reply"' in result
+
+
+def test_proactive_reply_prompt_contains_utc_time():
+    utc = "2024-06-15 09:30 UTC"
+    result = build_proactive_reply_prompt(["User: test"], "User", "test target", utc)
+    assert utc in result

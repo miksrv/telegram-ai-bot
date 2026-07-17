@@ -138,6 +138,20 @@ PROACTIVE_CONTEXT_MESSAGES = int(os.getenv("PROACTIVE_CONTEXT_MESSAGES", "25"))
 PROACTIVE_MIN_CONTEXT_MESSAGES = int(os.getenv("PROACTIVE_MIN_CONTEXT_MESSAGES", "10"))
 PROACTIVE_MIN_WORD_COUNT = int(os.getenv("PROACTIVE_MIN_WORD_COUNT", "3"))
 PROACTIVE_MIN_CHAR_COUNT = int(os.getenv("PROACTIVE_MIN_CHAR_COUNT", "15"))
+
+# Once-daily direct reply to a specific past message (in addition to the
+# general proactive posts above). Target selection happens in Python/SQL, not
+# via the LLM, so only one API call (the reply itself) is ever spent on it.
+PROACTIVE_REPLY_ENABLED = os.getenv("PROACTIVE_REPLY_ENABLED", "true").lower() == "true"
+PROACTIVE_REPLY_MAX_PER_DAY = int(os.getenv("PROACTIVE_REPLY_MAX_PER_DAY", "1"))
+# Minimum word count for a message to qualify as a reply target — deliberately
+# higher than PROACTIVE_MIN_WORD_COUNT so a two-word message is never picked.
+PROACTIVE_REPLY_MIN_WORD_COUNT = int(os.getenv("PROACTIVE_REPLY_MIN_WORD_COUNT", "8"))
+# Random delay window (from UTC midnight) before the daily reply becomes
+# eligible to fire, so it doesn't always land right after the day resets.
+PROACTIVE_REPLY_MIN_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MIN_DELAY_SECONDS", "3600"))
+PROACTIVE_REPLY_MAX_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MAX_DELAY_SECONDS", "43200"))
+
 MESSAGE_TTL_SECONDS = int(os.getenv("MESSAGE_TTL_SECONDS", "86400"))
 CLEANUP_LOOP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_LOOP_INTERVAL_SECONDS", "1800"))
 PROACTIVE_LOOP_INTERVAL_SECONDS = int(os.getenv("PROACTIVE_LOOP_INTERVAL_SECONDS", "600"))

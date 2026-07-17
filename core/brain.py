@@ -21,6 +21,7 @@ from core.personality_engine import PersonalityEngine
 from core.prompts import (
     build_general_system_prompt,
     build_proactive_prompt,
+    build_proactive_reply_prompt,
     build_reply_only_system_prompt,
     get_vision_prompt,
 )
@@ -417,6 +418,49 @@ class TARSBrain:
 
         except Exception as e:
             logging.exception(f"post_proactively error (chat={chat_id}): {e}")
+            return None
+
+    # --------------------------------------------------
+    # PROACTIVE DIRECT REPLY (once-daily, targets one specific message)
+    # --------------------------------------------------
+    def post_proactive_reply(self, chat_id: int, target_text: str, target_author: str):
+        """
+        Generates a direct reply to a specific past message. The caller (the
+        proactive engine) already picked the target message via SQL/Python, so
+        this spends exactly one LLM call — none are spent on target selection.
+
+        Returns the reply string on success, or None if there is not enough
+        context or if the LLM call fails.
+        """
+        try:
+            rows = get_recent_messages(chat_id, PROACTIVE_CONTEXT_MESSAGES)
+            if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
+                return None
+
+            context_lines = [f"{r['first_name']}: {r['text']}" for r in rows]
+            utc_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            prompt = build_proactive_reply_prompt(context_lines, target_author, target_text, utc_time)
+
+            raw = self._call_llm(
+                MODEL_TEXT,
+                [{"role": "system", "content": prompt}],
+                temperature=0.85,
+                max_tokens=200,
+                top_p=0.95,
+            )
+
+            data = self._parse_json_safe(raw)
+            if not data:
+                return None
+
+            reply = data.get("reply", "").strip()
+            if not reply:
+                return None
+
+            return reply
+
+        except Exception as e:
+            logging.exception(f"post_proactive_reply error (chat={chat_id}): {e}")
             return None
 
     # --------------------------------------------------
