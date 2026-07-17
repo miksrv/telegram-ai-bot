@@ -70,7 +70,9 @@ def _try_proactive_reply(bot, engine, chat_id: int, candidate: dict):
         try:
             mark_message_replied(candidate["id"])
         except Exception as e:
-            logger.exception(f"Failed to mark message as replied (chat={chat_id}, message_id={candidate['telegram_message_id']}): {e}")
+            logger.exception(
+                f"Failed to mark message as replied (chat={chat_id}, message_id={candidate['telegram_message_id']}): {e}"
+            )
 
         logger.info(f"Proactive reply sent to chat={chat_id} (message_id={candidate['telegram_message_id']})")
 

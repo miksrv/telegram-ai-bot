@@ -177,9 +177,13 @@ class ProactiveEngine:
             s["reply_count_today"] = 0
             s["day_reset_at"] = _next_utc_midnight()
             midnight_today = s["day_reset_at"] - 86400
-            next_at = midnight_today + random.randint(PROACTIVE_REPLY_MIN_DELAY_SECONDS, PROACTIVE_REPLY_MAX_DELAY_SECONDS)
+            next_at = midnight_today + random.randint(
+                PROACTIVE_REPLY_MIN_DELAY_SECONDS, PROACTIVE_REPLY_MAX_DELAY_SECONDS
+            )
             if next_at <= now:
-                next_at = s["day_reset_at"] + random.randint(PROACTIVE_REPLY_MIN_DELAY_SECONDS, PROACTIVE_REPLY_MAX_DELAY_SECONDS)
+                next_at = s["day_reset_at"] + random.randint(
+                    PROACTIVE_REPLY_MIN_DELAY_SECONDS, PROACTIVE_REPLY_MAX_DELAY_SECONDS
+                )
             s["next_reply_attempt_at"] = next_at
 
     def _schedule_next(self, chat_id: int):
