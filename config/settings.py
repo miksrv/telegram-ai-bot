@@ -33,17 +33,34 @@ def parse_chat_ids(raw: str) -> Set[int]:
 # --------------------------------------------------
 
 BOT_TOKEN = require_env("BOT_TOKEN")
-GROQ_API_KEY = require_env("GROQ_API_KEY")
 WEATHER_API_KEY = require_env("WEATHER_API_KEY")
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
 ADMIN_IDS = parse_chat_ids(require_env("ADMIN_IDS"))
 
 # --------------------------------------------------
-# Models
+# LLM Engine
 # --------------------------------------------------
+# Selects which cloud LLM core/llm powers the bot with. Only the API key for
+# the active engine is required; the other provider's key may be left blank.
+# Add a new provider by adding a file under core/llm/ implementing
+# LLMProvider and registering it in core/llm/engine.py's _PROVIDERS dict.
 
-MODEL_TEXT = "llama-3.3-70b-versatile"
-MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
+LLM_ENGINE = os.getenv("LLM_ENGINE", "groq").strip().lower()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+if LLM_ENGINE not in ("groq", "openai"):
+    raise RuntimeError(f"Unknown LLM_ENGINE '{LLM_ENGINE}', expected 'groq' or 'openai'")
+if LLM_ENGINE == "groq" and not GROQ_API_KEY:
+    raise RuntimeError("LLM_ENGINE=groq requires GROQ_API_KEY to be set")
+if LLM_ENGINE == "openai" and not OPENAI_API_KEY:
+    raise RuntimeError("LLM_ENGINE=openai requires OPENAI_API_KEY to be set")
+
+GROQ_MODEL_TEXT = os.getenv("GROQ_MODEL_TEXT", "llama-3.3-70b-versatile")
+GROQ_MODEL_VISION = os.getenv("GROQ_MODEL_VISION", "meta-llama/llama-4-scout-17b-16e-instruct")
+OPENAI_MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")
+OPENAI_MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o-mini")
 
 # --------------------------------------------------
 # Limits / Behavior
