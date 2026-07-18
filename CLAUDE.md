@@ -10,7 +10,12 @@ TARS is a Telegram bot for the Russian astronomy community (@astronom_chat), nam
 main.py                          # Entry point: starts MQTT + bot polling
 config/settings.py               # All configuration, loaded from .env
 core/
-  brain.py                       # TARSBrain: LLM calls, memory/profile updates, post_proactively()
+  brain.py                       # TARSBrain: builds prompts/context, memory/profile updates, post_proactively(); delegates the actual model call to core/llm
+  llm/                           # Pluggable cloud LLM engine (see "LLM Engine" section below)
+    engine.py                    # LLMEngine: picks the active provider from LLM_ENGINE, single .complete() entry point used by brain.py
+    base.py                      # LLMProvider interface + shared HTTP session/retry helper
+    groq_provider.py              # GroqProvider(LLMProvider)
+    openai_provider.py            # OpenAIProvider(LLMProvider)
   memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot helpers
   prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE)
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores → directives)
@@ -33,33 +38,49 @@ services/
   mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt); tracks starmap-service availability from its retained status topic + notifies listeners
   background_service.py          # Cleanup daemon + proactive posting daemon threads
   weather_service.py             # OpenWeatherMap client: get_weather() (used by weather_handler) + get_coordinates() (city → lat/lon, reused by starmap commands)
+  startup_notifier.py            # send_startup_notification(): DMs every ADMIN_IDS user once at boot with allowed chats, active LLM engine/model, MQTT status, proactive status
 utils/
   triggers.py                    # Trigger word detection + is_reply_to_bot
   identity.py                    # Extracts Telegram user identity dict from message
   photo.py                       # Extracts photo URL from Telegram message
+  typing_action.py               # typing_action() context manager: keeps the "typing..." indicator alive (refreshed every few seconds) for the duration of a slow call
 ```
+
+## LLM Engine
+
+`core/brain.py` never talks to a cloud API directly — every model call goes through `core/llm/llm_engine.complete(messages, *, kind, temperature, max_tokens, top_p, json_mode=True)`, where `kind` is `"text"` or `"vision"` (not a literal model name). `LLMEngine.__init__` picks a provider class from a registry dict keyed by `settings.LLM_ENGINE` (`"groq"` or `"openai"`) and instantiates it once at import time (`core/llm/engine.py`'s module-level `llm_engine` singleton). Each provider (`GroqProvider`, `OpenAIProvider` in `core/llm/groq_provider.py`/`openai_provider.py`) owns its own HTTP session, base URL, auth header, and resolves its own text/vision model name for `kind` — `brain.py` is fully decoupled from provider-specific model names. Groq's and OpenAI's chat completions APIs share the same request/response shape (messages/temperature/max_tokens/top_p/`response_format: json_object`, and the same `image_url` multimodal content-part format for vision), so both providers reuse the same `build_session`/`post_with_retry` helper in `core/llm/base.py`. **To add a new provider:** add one file implementing `LLMProvider.complete()` and one line in `core/llm/engine.py`'s `_PROVIDERS` dict — nothing in `brain.py` changes.
+
+Only the API key for the active engine is validated at startup (`config/settings.py`); the inactive provider's key may be left blank in `.env`.
+
+**Retries.** `post_with_retry` (`core/llm/base.py`) retries transient connection errors (via `build_session`'s urllib3 `Retry` adapter for HTTP 500/502/503/504, and a manual loop for `ConnectionError`/`Timeout`/`ChunkedEncodingError`) and, separately, ordinary rate-limit `429`s — up to 3 attempts with backoff, honoring the `Retry-After` header when the provider sends one. A `429` is only retried when `is_quota_error()` says it is **not** billing exhaustion; a genuine quota `429`/`402` propagates immediately (no wasted attempts) so it reaches the fallback logic below without delay.
+
+**Automatic quota fallback.** If the *other* provider's API key also happens to be filled in, `LLMEngine.__init__` builds it as a standby `fallback_provider` (no separate config toggle — purely derived from whether `GROQ_API_KEY`/`OPENAI_API_KEY` is non-empty). When the active provider's HTTP call fails with a billing/quota-exhaustion error, the provider raises `core.llm.base.LLMQuotaExceededError` (detected via `is_quota_error()`, which only matches HTTP 402 or a 429 whose body carries an OpenAI-style `error.code`/`error.type` such as `insufficient_quota` — an ordinary rate-limit 429 with no such code is left alone, since that's already handled by `post_with_retry`'s backoff, and auth/config errors like 401 are never treated as quota errors so they don't get silently masked by a provider switch). `LLMEngine.complete()` catches that exception, logs it, **permanently** swaps `self.provider` to the standby for the rest of the process's lifetime (clearing `fallback_provider` so it never bounces back), and retries the same call once against the new provider. A bot restart re-evaluates `LLM_ENGINE` from scratch.
 
 ## Key Data Flows
 
+### Startup notification
+`main.py` calls `start_mqtt()` and `init_bot()`, then `services/startup_notifier.send_startup_notification(bot, mqtt_connected)` before any other background loop starts. It DMs every user in `ADMIN_IDS` (not just chats — this requires each admin to have started a private chat with the bot at least once, or Telegram rejects that individual send) with the allowed chat IDs, the active `LLM_ENGINE` + its text model, whether the initial MQTT connect succeeded, and whether proactive engagement is enabled. Each admin send is wrapped independently so one admin who never DM'd the bot doesn't block the notification to the others.
+
 ### Conversational message
 1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check. When the message is a reply to the bot, the replied-to text is captured and passed to `brain.think` as `reply_to_text`
-2. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → Groq API. If `reply_to_text` is set and isn't already the latest assistant turn, it is injected as the immediately preceding assistant turn so the model answers the exact message being replied to (handles replies to proactive posts / messages evicted from the rolling memory window)
-3. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes}` on the first message and every 5th (`message_count % 5 == 0`)
-4. `db_increment_message_count` always runs; profile averages and notes only updated on designated turns
-5. `bot.reply_to` sends response
+2. The `brain.think`/`analyze_image` call runs inside a `utils.typing_action.typing_action(bot, chat_id)` context manager, which sends Telegram's "typing" chat action immediately and re-sends it every ~4s from a background thread for as long as the block runs (Telegram clears the indicator after ~5s otherwise) — it stops the moment the call returns, before the reply is sent. `handlers/weather_handler.py` uses the same helper around its (much shorter) weather API call
+3. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → the active LLM engine (`core/llm`, see above). If `reply_to_text` is set and isn't already the latest assistant turn, it is injected as the immediately preceding assistant turn so the model answers the exact message being replied to (handles replies to proactive posts / messages evicted from the rolling memory window)
+4. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes}` on the first message and every 5th (`message_count % 5 == 0`)
+5. `db_increment_message_count` always runs; profile averages and notes only updated on designated turns — both happen inside the `typing_action` block, before it exits
+6. `bot.reply_to` sends response, after the typing heartbeat has already stopped
 
 ### Proactive posting (background)
 1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
 2. For each `PROACTIVE_CHAT_IDS` chat: `proactive_engine.should_post()` checks, in order: scheduled `next_attempt_at`, daily cap (`PROACTIVE_MAX_PER_DAY`, resets at UTC midnight), min gap, enough context rows in DB, and that there is at least one new user message since the last proactive post
-3. On approval: `brain.post_proactively()` fetches recent messages → Groq API → JSON `{reply}`
+3. On approval: `brain.post_proactively()` fetches recent messages → the active LLM engine → JSON `{reply}`
 4. On success: `bot.send_message()` sends; `memory.add_bot_message()` records the post as a standalone assistant turn in chat memory (so follow-ups/replies have context); `proactive_engine.record_post()` advances schedule (random `PROACTIVE_NEXT_MIN/MAX_SECONDS` window)
 5. On failure (no content or exception): `proactive_engine.reschedule_failed()` pushes `next_attempt_at` forward without consuming the daily budget
 
 ### Proactive direct reply (background, once daily)
-In addition to the general posts above, the same loop iteration (when a general post did not fire) can address one specific past message directly, as a Telegram reply.
+Gated by its own master toggle, `PROACTIVE_REPLY_ENABLED` (default `true`) — checked in `background_service.start_proactive_loop` before `should_post_reply()` is even called. In addition to the general posts above, the same loop iteration (when a general post did not fire) can address one specific past message directly, as a Telegram reply.
 1. `proactive_engine.should_post_reply()` checks its own schedule (`next_reply_attempt_at`, randomized once per UTC day within `PROACTIVE_REPLY_MIN/MAX_DELAY_SECONDS` of midnight), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`, default 1), and the shared `PROACTIVE_MIN_GAP_SECONDS` gap against the last proactive action (post or reply)
 2. Target selection is pure SQL/Python, not an LLM call: `database.db.get_reply_candidate()` picks a random message from the `messages` table with `word_count >= PROACTIVE_REPLY_MIN_WORD_COUNT` (screens out short, e.g. two-word, messages) and `replied_at = 0` (never used before). Photo messages never qualify — the observe block only ever saves `content_type == "text"` rows, so nothing with an image is in the table to begin with
-3. On a candidate: `brain.post_proactive_reply()` fetches recent context, builds a prompt naming the target author/text, and makes a single Groq API call → JSON `{reply}`
+3. On a candidate: `brain.post_proactive_reply()` fetches recent context, builds a prompt naming the target author/text, and makes a single call to the active LLM engine → JSON `{reply}`
 4. On success: `bot.send_message(..., reply_to_message_id=...)` sends it as a genuine Telegram reply to the target; `memory.add_bot_message()` records it in chat memory; `database.db.mark_message_replied()` flags the target row so it is never picked again; `proactive_engine.record_reply()` consumes the daily budget
 5. On failure (no content or exception): `proactive_engine.reschedule_reply_failed()` retries later without consuming the daily budget, and the target message is not marked as replied
 
@@ -73,7 +94,7 @@ Integration with the separate **starmap-service** repo (its `API.md` is the shar
 1. `starmap_handler` gates each command on access + `is_starmap_online()` (refuses with a Russian "service unavailable" message when the service is down)
 2. For observer-bound charts (`/sky` → `zenith`, `/horizon` → `horizon`) the city argument is resolved to coordinates via `weather_service.get_coordinates()` (OpenWeatherMap geocoding). `/skymap` (`full`) and `/galaxy` (`galactic`) need no coordinates. `/horizon` accepts an optional trailing compass direction (RU/EN aliases → `N..NW`, default `S`)
 3. Registers a per-request queue with `register_request(request_id, maxsize=0)` — **unbounded**, because the contract delivers **two** replies per request: a `queued` acknowledgement (with `position`) then a final `ok`/`error`. Publishes `{request_id, map_type, observer?, options?}` to `starmap/command`
-4. A background daemon thread loops on the queue until `STARMAP_MAX_WAIT` (default 120s). On the first `queued` ack it posts a transient "Начал процесс генерации карты…" status message **as a reply to the command**. On `ok` it deletes that status message and posts the chart **as a document** (`send_document`, not a compressed photo) replying to the command — reading `image_path` from the shared filesystem (only if it resolves inside `STARMAP_IMAGE_DIR` via `_is_allowed_image_path`; paths outside it are rejected and logged, guarding against a compromised service/broker reading arbitrary host files), falling back to decoding `image_base64`. On `error`/timeout it deletes the status message and replies with the message. The status-message lifecycle (`safe_reply`/`safe_delete`) lives in `handlers/delivery.py` and is shared with `/photo`
+4. A background daemon thread loops on the queue until `STARMAP_MAX_WAIT` (default 120s). On the first `queued` ack it posts a transient "Начал процесс генерации карты…" status message **as a reply to the command**. On `ok` it deletes that status message and posts the chart **as a document** (`send_document`, not a compressed photo) replying to the command — reading `image_path` from the shared filesystem (only if it resolves inside `STARMAP_IMAGE_DIR` via `_is_allowed_image_path`; paths outside it are rejected and logged, guarding against a compromised service/broker reading arbitrary host files), falling back to decoding `image_base64`. When `STARMAP_DELETE_AFTER_SEND` is enabled (default `false`), the delivered file is removed from `STARMAP_IMAGE_DIR` (best-effort, errors only logged) after a successful send from `image_path` — never for the base64 fallback — so charts don't accumulate on disk. On `error`/timeout it deletes the status message and replies with the message. The status-message lifecycle (`safe_reply`/`safe_delete`) lives in `handlers/delivery.py` and is shared with `/photo`
 5. **Dynamic command menu:** `mqtt_service` subscribes to the retained `starmap/status` topic and tracks online/offline; `telegram_service` registers a status listener that rebuilds `set_my_commands` so the four chart commands appear in the Telegram `/` menu only while the service is online (and disappear via the service's Last Will when it dies)
 
 > Gap noted in the service: `map_type: optic` (object through a given optic) requires explicit `target.ra`/`target.dec`; resolving an object name (e.g. `M31`) to coordinates is not implemented server-side, so no `/optic`-style command is exposed yet.
@@ -89,10 +110,16 @@ Copy `.env.example` to `.env`. Required variables:
 
 ```env
 BOT_TOKEN=          # Telegram bot token
-GROQ_API_KEY=       # Groq API key
 WEATHER_API_KEY=    # OpenWeatherMap API key
 ALLOWED_CHAT_IDS=   # Comma-separated Telegram chat IDs
 ADMIN_IDS=          # Comma-separated Telegram user IDs (admins)
+```
+
+LLM engine selection — only the key for the active engine is required (see "LLM Engine" above):
+```env
+LLM_ENGINE=      # "groq" or "openai" (default: groq)
+GROQ_API_KEY=    # Required when LLM_ENGINE=groq
+OPENAI_API_KEY=  # Required when LLM_ENGINE=openai
 ```
 
 Optional proactive engagement variables (see `.env.example` for the full list):
@@ -103,19 +130,27 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 
 Other optional variables:
 ```env
-LOG_LEVEL=          # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
-STARMAP_MAX_WAIT=   # Seconds to wait for a finished star chart (default: 120)
-STARMAP_IMAGE_DIR=  # Shared dir for chart files; image_path is validated against it (default: unset → base64 only)
+LOG_LEVEL=                  # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
+STARMAP_MAX_WAIT=           # Seconds to wait for a finished star chart (default: 120)
+STARMAP_IMAGE_DIR=          # Shared dir for chart files; image_path is validated against it (default: unset → base64 only)
+STARMAP_DELETE_AFTER_SEND=  # Delete the delivered chart file from STARMAP_IMAGE_DIR after sending (default: false)
+PROACTIVE_REPLY_ENABLED=    # Master toggle for the once-daily direct reply feature (default: true)
+GROQ_MODEL_TEXT=            # Override Groq's text model (default: llama-3.3-70b-versatile)
+GROQ_MODEL_VISION=          # Override Groq's vision model (default: meta-llama/llama-4-scout-17b-16e-instruct)
+OPENAI_MODEL_TEXT=          # Override OpenAI's text model (default: gpt-4o-mini)
+OPENAI_MODEL_VISION=        # Override OpenAI's vision model (default: gpt-4o-mini)
 ```
 
 `PROACTIVE_CHAT_IDS` is intersected with `ALLOWED_CHAT_IDS` at load time; IDs outside the allowed set are dropped with a warning.
 
 ## Models
 
-| Purpose | Model |
-|---------|-------|
-| Text generation | `llama-3.3-70b-versatile` |
-| Image analysis | `meta-llama/llama-4-scout-17b-16e-instruct` |
+Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VISION` env vars above):
+
+| Provider | Text generation | Image analysis |
+|----------|------------------|-----------------|
+| Groq (`LLM_ENGINE=groq`, default) | `llama-3.3-70b-versatile` | `meta-llama/llama-4-scout-17b-16e-instruct` |
+| OpenAI (`LLM_ENGINE=openai`) | `gpt-4o-mini` | `gpt-4o-mini` |
 
 ## LLM Response Contracts
 
@@ -153,7 +188,7 @@ STARMAP_IMAGE_DIR=  # Shared dir for chart files; image_path is validated agains
 
 - Stored in SQLite (`data/tars_user_profiles.db`)
 - `message_count` increments on every bot response (via `increment_message_count()`), independent of profile updates
-- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via cumulative moving average only on full-update turns (first message + every 5th)
+- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via an exponential moving average (`avg = alpha * sample + (1 - alpha) * avg`, `PROFILE_EMA_ALPHA`, default `0.3`) only on full-update turns (first message + every 5th). EMA (not a cumulative average) is deliberate: since updates only land on a fraction of turns, a cumulative average keyed on `message_count` would shrink each new sample's weight too fast and freeze the profile
 - `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt
 - `notes` is an LLM-maintained free-text summary of the user, fully replaced each time it runs
 
