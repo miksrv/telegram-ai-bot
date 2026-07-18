@@ -175,6 +175,71 @@ def test_analyze_image_prunes_history_and_builds_multimodal_turn(monkeypatch):
 
 
 # --------------------------------------------------
+# _process_llm_response — empty/invalid replies must be treated as an error,
+# never sent to Telegram as an empty message (bot.reply_to rejects empty text).
+# --------------------------------------------------
+
+
+def test_process_llm_response_treats_empty_reply_as_error(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", lambda self, *a, **kw: '{"reply": ""}')
+
+    calls = {"memory": 0, "count": 0}
+    monkeypatch.setattr(
+        brain_mod.memory,
+        "add_chat_memory",
+        lambda *a, **kw: calls.__setitem__("memory", calls["memory"] + 1),
+    )
+    monkeypatch.setattr(
+        brain_mod,
+        "db_increment_message_count",
+        lambda *a, **kw: calls.__setitem__("count", calls["count"] + 1),
+    )
+
+    brain = make_brain()
+    reply, err = brain._process_llm_response(
+        "text",
+        [{"role": "system", "content": "SYS"}],
+        temperature=0.8,
+        max_tokens=100,
+        top_p=0.9,
+        chat_id=1,
+        user_id=2,
+        user_input="hi",
+    )
+
+    assert reply is None
+    assert err == "Ошибка ответа логического модуля"
+    # An error response skips memory/profile side effects, same as invalid JSON.
+    assert calls["memory"] == 0
+    assert calls["count"] == 0
+
+
+def test_process_llm_response_returns_reply_when_present(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", lambda self, *a, **kw: '{"reply": "привет!"}')
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    brain = make_brain()
+    reply, err = brain._process_llm_response(
+        "text",
+        [{"role": "system", "content": "SYS"}],
+        temperature=0.8,
+        max_tokens=100,
+        top_p=0.9,
+        chat_id=1,
+        user_id=2,
+        user_input="hi",
+    )
+
+    assert reply == "привет!"
+    assert err is None
+
+
+# --------------------------------------------------
 # post_proactive_reply — once-daily direct reply to a specific message
 # --------------------------------------------------
 

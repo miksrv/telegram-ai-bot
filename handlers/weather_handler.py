@@ -4,12 +4,11 @@ Handles /weather command
 """
 
 import logging
-import random
-import time
 
 from telebot import TeleBot, types
 
 from services.weather_service import get_weather
+from utils.typing_action import typing_action
 
 
 def handle_weather(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -29,12 +28,9 @@ def handle_weather(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     city = args[1].strip()
 
-    # --- Simulate typing ---
-    bot.send_chat_action(chat_id, "typing")
-    time.sleep(random.uniform(0.5, 1.2))  # simulate thinking delay
-
     try:
-        weather_text = get_weather(city)
+        with typing_action(bot, chat_id):
+            weather_text = get_weather(city)
         bot.reply_to(message, weather_text)
     except Exception as e:
         logging.error(f"Weather error: {e}")

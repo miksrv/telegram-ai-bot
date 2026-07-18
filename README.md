@@ -1,6 +1,6 @@
 # TARS - Telegram AI Bot
 
-TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (powered by Groq) with a CubeSat satellite ground station interface and an on-demand star-chart generator, both over MQTT.
+TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (Groq or OpenAI/ChatGPT, switchable via config) with a CubeSat satellite ground station interface and an on-demand star-chart generator, both over MQTT.
 
 ---
 
@@ -19,8 +19,9 @@ Both services are optional — the bot starts and runs normally without them; th
 
 ## Features
 
-- **Conversational AI** - responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses Groq's LLaMA models for text and vision
+- **Conversational AI** - responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses a pluggable LLM engine (Groq's LLaMA models or OpenAI's ChatGPT models, switchable via `LLM_ENGINE`) for text and vision
 - **Proactive engagement** - autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
+- **Proactive direct reply** - once per day, replies directly (as a genuine Telegram reply) to one specific past message picked at random by SQL/Python, not the LLM — spending only one API call on the reply text itself
 - **Adaptive personality** - tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
 - **User profiles** - persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
 - **Image analysis** - analyzes photos posted in the chat with astronomical context awareness
@@ -29,6 +30,7 @@ Both services are optional — the bot starts and runs normally without them; th
 - **Star charts** - `/sky`, `/horizon`, `/skymap`, `/galaxy` generate night-sky maps via the companion [starmap-service](https://github.com/miksrv/starmap-service) over MQTT; city-based commands reuse OpenWeatherMap geocoding for observer coordinates, and the chart is returned as a document
 - **Weather** - `/weather <city>` fetches current weather from OpenWeatherMap
 - **Rate limiting** - per-user sliding window rate limiter with configurable penalty cooldowns
+- **Live "typing..." indicator** - shown the instant a message is accepted and kept alive for as long as the actual LLM/weather call takes (refreshed every ~4s, since Telegram clears it after ~5s), instead of a fixed fake delay
 - **Conversation memory** - in-RAM chat history passed to the LLM as structured conversation turns, persisted to SQLite on shutdown and reloaded on restart
 
 ---
@@ -41,7 +43,12 @@ telegram-ai-bot/
 ├── config/
 │   └── settings.py                  # All configuration (loaded from .env)
 ├── core/
-│   ├── brain.py                     # LLM calls, memory/profile updates, proactive posting
+│   ├── brain.py                     # Builds prompts/context, memory/profile updates, proactive posting; delegates model calls to core/llm
+│   ├── llm/                         # Pluggable LLM engine
+│   │   ├── engine.py                # LLMEngine: picks the active provider from LLM_ENGINE
+│   │   ├── base.py                  # LLMProvider interface + shared HTTP session/retry helper
+│   │   ├── groq_provider.py         # GroqProvider(LLMProvider)
+│   │   └── openai_provider.py       # OpenAIProvider(LLMProvider)
 │   ├── memory.py                    # In-RAM conversation context (chat + user), SQLite persistence
 │   ├── prompts.py                   # System prompt templates (conversational + proactive)
 │   ├── personality_engine.py        # Per-user adaptive behavior rules
@@ -63,11 +70,13 @@ telegram-ai-bot/
 │   ├── telegram_service.py          # Bot initialization, handler registration, dynamic command menu
 │   ├── mqtt_service.py              # MQTT client, per-request response queues, starmap availability tracking
 │   ├── background_service.py        # Cleanup daemon + proactive posting daemon
-│   └── weather_service.py           # OpenWeatherMap client (current weather + city → coordinates geocoding)
+│   ├── weather_service.py           # OpenWeatherMap client (current weather + city → coordinates geocoding)
+│   └── startup_notifier.py          # DMs every admin once at boot with allowed chats, active LLM engine, MQTT/proactive status
 └── utils/
     ├── triggers.py                  # Trigger word detection + reply-to-bot check
     ├── identity.py                  # Telegram identity extraction
-    └── photo.py                     # Telegram photo URL extraction
+    ├── photo.py                     # Telegram photo URL extraction
+    └── typing_action.py             # Keeps the "typing..." indicator alive for the duration of a slow call
 ```
 
 ---
@@ -75,7 +84,7 @@ telegram-ai-bot/
 ## Requirements
 
 - Python 3.10+
-- A Groq API key (free tier available at [console.groq.com](https://console.groq.com))
+- An API key for at least one supported LLM engine: a Groq API key (free tier available at [console.groq.com](https://console.groq.com)) or an OpenAI API key (from [platform.openai.com](https://platform.openai.com/api-keys)) — pick one via `LLM_ENGINE`
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - An OpenWeatherMap API key (free tier available)
 - An MQTT broker (e.g., Mosquitto) running on port 1883 — only required for the MQTT-backed commands (`/status`, `/photo`, and the star-chart commands)
@@ -124,10 +133,29 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | Variable | Description |
 |----------|-------------|
 | `BOT_TOKEN` | Telegram bot token from BotFather |
-| `GROQ_API_KEY` | Groq API key |
 | `WEATHER_API_KEY` | OpenWeatherMap API key |
 | `ALLOWED_CHAT_IDS` | Comma-separated list of authorized group chat IDs |
 | `ADMIN_IDS` | Comma-separated list of admin Telegram user IDs |
+
+### LLM Engine
+
+TARS talks to exactly one cloud LLM at a time through a pluggable engine (`core/llm/`); which one is picked by `LLM_ENGINE`. Only the API key for the active engine needs to be filled in — the other may be left blank.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_ENGINE` | `groq` | Active engine: `groq` or `openai` |
+| `GROQ_API_KEY` | _(empty)_ | Groq API key — required when `LLM_ENGINE=groq` |
+| `OPENAI_API_KEY` | _(empty)_ | OpenAI API key — required when `LLM_ENGINE=openai` |
+| `GROQ_MODEL_TEXT` | `llama-3.3-70b-versatile` | Groq text model override |
+| `GROQ_MODEL_VISION` | `meta-llama/llama-4-scout-17b-16e-instruct` | Groq vision model override |
+| `OPENAI_MODEL_TEXT` | `gpt-4o-mini` | OpenAI text model override |
+| `OPENAI_MODEL_VISION` | `gpt-4o-mini` | OpenAI vision model override |
+
+To add a further provider (e.g. Anthropic, a local model server), add one file under `core/llm/` implementing the `LLMProvider` interface (`core/llm/base.py`) and register it in `core/llm/engine.py`'s provider registry — no changes needed anywhere else, including `core/brain.py`.
+
+**Retries:** an ordinary rate-limit response (HTTP 429 with no billing-specific error code) is retried automatically with backoff — up to 3 attempts, honoring the `Retry-After` header when the API sends one — before it's treated as a failure. Server errors (500/502/503/504) and dropped connections are retried the same way.
+
+**Automatic quota fallback:** if you fill in *both* `GROQ_API_KEY` and `OPENAI_API_KEY`, the inactive one is kept on standby automatically — no extra config needed. If the active engine's account runs out of balance/quota, the bot detects it (HTTP 402, or a 429 whose response body carries a billing-specific error code like `insufficient_quota` — an ordinary rate-limit 429 does *not* trigger this, it's retried instead per above) and permanently switches to the other engine for the rest of that run, so the bot keeps responding instead of failing. It does not switch back on its own — restart the bot (with `.env` updated, if needed) to re-evaluate `LLM_ENGINE` from scratch. Auth errors (e.g. a bad key) are never treated as quota exhaustion, so a misconfiguration surfaces as a real error rather than a confusing silent switch.
 
 ### Proactive Engagement (optional)
 
@@ -143,6 +171,11 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `PROACTIVE_MIN_CONTEXT_MESSAGES` | `10` | Minimum messages in DB before proactive posting activates for a chat |
 | `PROACTIVE_MIN_WORD_COUNT` | `3` | Minimum word count for a message to be saved for context |
 | `PROACTIVE_MIN_CHAR_COUNT` | `15` | Minimum character count (alternative to word count; OR logic) |
+| `PROACTIVE_REPLY_ENABLED` | `true` | Master toggle for the once-daily direct reply feature (independent of `PROACTIVE_ENABLED`) |
+| `PROACTIVE_REPLY_MAX_PER_DAY` | `1` | Maximum direct replies per chat per calendar day (UTC) |
+| `PROACTIVE_REPLY_MIN_WORD_COUNT` | `8` | Minimum word count for a message to qualify as a reply target (deliberately higher than `PROACTIVE_MIN_WORD_COUNT` so short messages are never picked) |
+| `PROACTIVE_REPLY_MIN_DELAY_SECONDS` | `3600` | Lower bound of the random delay (from UTC midnight) before the daily reply becomes eligible |
+| `PROACTIVE_REPLY_MAX_DELAY_SECONDS` | `43200` | Upper bound of that delay window (default: 1–12 hours) |
 | `MESSAGE_TTL_SECONDS` | `86400` | How long a message is retained in the DB (24 hours) |
 | `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Cleanup daemon wake interval (30 minutes) |
 | `PROACTIVE_LOOP_INTERVAL_SECONDS` | `600` | Proactive posting daemon wake interval (10 minutes) |
@@ -153,6 +186,7 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 |----------|---------|-------------|
 | `STARMAP_MAX_WAIT` | `120` | Seconds to wait for a finished star chart over MQTT (queued ack + render); starmap-service targets ~90–120s on a Raspberry Pi |
 | `STARMAP_IMAGE_DIR` | _(unset)_ | Shared directory the starmap-service writes charts into. `image_path` values in results are validated against it (realpath + prefix) before being read; unset disables file reads and uses the base64 fallback only |
+| `STARMAP_DELETE_AFTER_SEND` | `false` | Delete the delivered chart file from `STARMAP_IMAGE_DIR` after it's successfully sent to Telegram, so charts don't pile up on disk. Only applies to the `image_path` (file) delivery mode, not the base64 fallback |
 
 ### Logging (optional)
 
@@ -213,6 +247,14 @@ To activate, set at minimum:
 ```env
 PROACTIVE_CHAT_IDS=-1001234567890
 ```
+
+### Once-daily direct reply
+
+Independently of the general posts above (gated by its own `PROACTIVE_REPLY_ENABLED` toggle, default `true`), the same background loop can — once per calendar day (UTC) per chat — reply directly to one specific past message, as a genuine Telegram reply:
+
+1. Each loop iteration, if a general post didn't fire, the engine checks its own schedule (`next_reply_attempt_at`, randomized once per day within `PROACTIVE_REPLY_MIN_DELAY_SECONDS`–`PROACTIVE_REPLY_MAX_DELAY_SECONDS` of UTC midnight), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`), and the same `PROACTIVE_MIN_GAP_SECONDS` gap shared with general posts.
+2. The target message is picked by **plain SQL/Python, not the LLM** — a random row from the most recent qualifying messages in the `messages` table (`word_count >= PROACTIVE_REPLY_MIN_WORD_COUNT`, never used before). This means only a single LLM call (the reply text itself) is ever spent on this feature.
+3. On success, the reply is sent via `bot.send_message(..., reply_to_message_id=...)`, recorded in chat memory, and the target message is flagged so it's never picked again. On failure, the attempt is rescheduled without consuming the daily budget and the target is left unflagged.
 
 ---
 
@@ -345,7 +387,10 @@ sudo systemctl start tars
 - Run the bot from the project root directory: `python main.py`, not `python core/brain.py`
 
 **`RuntimeError: ENV variable X is not set`**
-- Check your `.env` file — all five required variables must be present and non-empty
+- Check your `.env` file — `BOT_TOKEN`, `WEATHER_API_KEY`, `ALLOWED_CHAT_IDS`, and `ADMIN_IDS` must always be present and non-empty
+
+**`RuntimeError: LLM_ENGINE=... requires ..._API_KEY to be set`**
+- Set `GROQ_API_KEY` (if `LLM_ENGINE=groq`, the default) or `OPENAI_API_KEY` (if `LLM_ENGINE=openai`) — only the active engine's key is required
 
 **MQTT connection failed**
 - Verify Mosquitto is running: `mosquitto -v` or `systemctl status mosquitto`
@@ -365,6 +410,10 @@ sudo systemctl start tars
 - Verify `PROACTIVE_CHAT_IDS` contains valid chat IDs that are also in `ALLOWED_CHAT_IDS`
 - The bot needs at least `PROACTIVE_MIN_CONTEXT_MESSAGES` (default: 10) saved messages before it will post — the chat needs some activity first
 - Check logs for `"Proactive engagement active for N chat(s)"` at startup
+
+**Startup notification not received**
+- Each `ADMIN_IDS` user is DM'd directly (not via a group chat), which only works if that user has opened a private chat with the bot at least once beforehand — Telegram rejects sends to users who haven't
+- A failed send for one admin is only logged as a warning and does not stop the bot from starting or notifying the other admins
 
 ---
 

@@ -1,21 +1,12 @@
 import base64
 import json
 import logging
-import time
 from datetime import datetime
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-from config.settings import (
-    GROQ_API_KEY,
-    MAX_INPUT_CHARS,
-    MODEL_TEXT,
-    MODEL_VISION,
-    PROACTIVE_CONTEXT_MESSAGES,
-    PROACTIVE_MIN_CONTEXT_MESSAGES,
-)
+from config.settings import MAX_INPUT_CHARS, PROACTIVE_CONTEXT_MESSAGES, PROACTIVE_MIN_CONTEXT_MESSAGES
+from core.llm import llm_engine
 from core.memory import memory
 from core.personality_engine import PersonalityEngine
 from core.prompts import (
@@ -34,57 +25,12 @@ from database.profile_repo import (
 )
 
 # --------------------------------------------------
-# Shared HTTP session (connection reuse)
+# Shared HTTP session (connection reuse) — for downloading Telegram photo
+# bytes in analyze_image(); unrelated to the LLM provider calls, which go
+# through core.llm.llm_engine.
 # --------------------------------------------------
 
-API_HEADERS = {
-    "Authorization": f"Bearer {GROQ_API_KEY}",
-    "Content-Type": "application/json",
-}
-
 session = requests.Session()
-
-# Configure retry strategy for transient network errors
-retries = Retry(
-    total=3,
-    connect=3,
-    backoff_factor=1,
-    status_forcelist=[500, 502, 503, 504],
-)
-
-session.mount("https://", HTTPAdapter(max_retries=retries))
-
-# ------------------------------------------------
-# Helper function for API calls with retry logic
-# ------------------------------------------------
-
-
-def post_with_retry(url, headers, payload, retries=3):
-    for attempt in range(retries):
-        try:
-            response = session.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=(5, 60),
-            )
-
-            response.raise_for_status()
-            return response
-
-        except (
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-            requests.exceptions.ChunkedEncodingError,
-            ConnectionResetError,
-        ) as e:
-
-            logging.warning(f"API retry {attempt+1}/{retries}: {e}")
-
-            if attempt == retries - 1:
-                raise
-
-            time.sleep(2**attempt)  # exponential backoff
 
 
 # ==================================================
@@ -117,7 +63,7 @@ class TARSBrain:
 
         try:
             reply, err = self._process_llm_response(
-                MODEL_TEXT,
+                "text",
                 messages,
                 temperature=0.8,
                 max_tokens=800,
@@ -201,7 +147,7 @@ class TARSBrain:
             memory_text = f"[изображение] {caption_text}".strip() if caption_text else "[изображение]"
 
             reply, err = self._process_llm_response(
-                MODEL_VISION,
+                "vision",
                 messages,
                 temperature=0.9,
                 max_tokens=400,
@@ -226,7 +172,7 @@ class TARSBrain:
     # --------------------------------------------------
     def _process_llm_response(
         self,
-        model,
+        kind,
         messages,
         temperature,
         max_tokens,
@@ -237,7 +183,7 @@ class TARSBrain:
         update_profile: bool = True,
     ):
         raw = self._call_llm(
-            model,
+            kind,
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -248,7 +194,10 @@ class TARSBrain:
         if not data:
             return None, "Ошибка ответа логического модуля"
 
-        reply = data.get("reply", "")
+        reply = data.get("reply", "").strip()
+        if not reply:
+            logging.error(f"LLM returned empty reply field: {raw}")
+            return None, "Ошибка ответа логического модуля"
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
@@ -354,30 +303,19 @@ class TARSBrain:
         return messages
 
     # --------------------------------------------------
-    # LLM call abstraction (for both text and vision)
+    # LLM call abstraction (for both text and vision) — delegates to the
+    # active core.llm provider. `kind` is "text" or "vision", not a literal
+    # model name; the provider resolves its own model per role.
     # --------------------------------------------------
-    def _call_llm(self, model, messages, temperature, max_tokens, top_p, json_mode=True):
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "top_p": top_p,
-        }
-
-        # Force valid JSON output at the API level instead of relying on prompt
-        # instructions + brace-extraction fallback. All prompts already request
-        # JSON and contain the word "json" (a Groq JSON-mode requirement).
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-
-        response = post_with_retry(
-            "https://api.groq.com/openai/v1/chat/completions",
-            API_HEADERS,
-            payload,
+    def _call_llm(self, kind, messages, temperature, max_tokens, top_p, json_mode=True):
+        return llm_engine.complete(
+            messages,
+            kind=kind,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            json_mode=json_mode,
         )
-
-        return response.json()["choices"][0]["message"]["content"].strip()
 
     # --------------------------------------------------
     # PROACTIVE POSTING
@@ -399,7 +337,7 @@ class TARSBrain:
             prompt = build_proactive_prompt(context_lines, utc_time)
 
             raw = self._call_llm(
-                MODEL_TEXT,
+                "text",
                 [{"role": "system", "content": prompt}],
                 temperature=0.85,
                 max_tokens=200,
@@ -442,7 +380,7 @@ class TARSBrain:
             prompt = build_proactive_reply_prompt(context_lines, target_author, target_text, utc_time)
 
             raw = self._call_llm(
-                MODEL_TEXT,
+                "text",
                 [{"role": "system", "content": prompt}],
                 temperature=0.85,
                 max_tokens=200,

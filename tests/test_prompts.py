@@ -1,9 +1,7 @@
 from core.prompts import (
-    build_general_prompt,
     build_general_system_prompt,
     build_proactive_prompt,
     build_proactive_reply_prompt,
-    build_reply_only_prompt,
     build_reply_only_system_prompt,
 )
 
@@ -11,56 +9,6 @@ IDENTITY = "- Telegram ID: 123\n- First name: Test\n- Username: @testuser\n"
 PROFILE = "Adaptive response behavior:\n- Be concise.\n\nInterests: astronomy\nNotes: test user"
 CONTEXT = "User#123: что такое пульсар?\nTARS: Пульсар — это..."
 MESSAGE = "Расскажи про чёрные дыры"
-
-
-# --------------------------------------------------
-# build_general_prompt (with profile_update + notes)
-# --------------------------------------------------
-
-
-def test_general_prompt_contains_reply_field():
-    result = build_general_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"reply"' in result
-
-
-def test_general_prompt_contains_profile_update():
-    result = build_general_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"profile_update"' in result
-
-
-def test_general_prompt_contains_notes():
-    result = build_general_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"notes"' in result
-
-
-def test_general_prompt_contains_message():
-    result = build_general_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert MESSAGE in result
-
-
-def test_general_prompt_contains_context():
-    result = build_general_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert CONTEXT in result
-
-
-# --------------------------------------------------
-# build_reply_only_prompt (reply only, no profile fields)
-# --------------------------------------------------
-
-
-def test_reply_only_prompt_contains_reply_field():
-    result = build_reply_only_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"reply"' in result
-
-
-def test_reply_only_prompt_no_profile_update():
-    result = build_reply_only_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"profile_update"' not in result
-
-
-def test_reply_only_prompt_no_notes():
-    result = build_reply_only_prompt(CONTEXT, IDENTITY, PROFILE, MESSAGE)
-    assert '"notes"' not in result
 
 
 # --------------------------------------------------

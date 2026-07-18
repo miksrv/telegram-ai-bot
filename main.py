@@ -37,6 +37,7 @@ from config.settings import (
 from core.memory import memory
 from database.db import close_connection
 from services.mqtt_service import start_mqtt, stop_mqtt
+from services.startup_notifier import send_startup_notification
 from services.telegram_service import init_bot
 
 
@@ -58,10 +59,12 @@ if __name__ == "__main__":
     logging.info("TARS v1.1 Systems Online")
     logging.info(f"Allowed Chats: {len(ALLOWED_CHAT_IDS)}")
 
-    if not start_mqtt(background=True):
+    mqtt_connected = start_mqtt(background=True)
+    if not mqtt_connected:
         logging.warning("MQTT unavailable — /status, /photo and star-chart commands will not work")
 
     bot = init_bot()
+    send_startup_notification(bot, mqtt_connected)
 
     # --- Proactive Engagement ---
     if PROACTIVE_ENABLED:
