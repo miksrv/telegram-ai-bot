@@ -5,7 +5,6 @@ Handles incoming messages, triggers, cooldowns, and dispatches to TARSBrain
 
 import logging
 import random
-import time
 
 from telebot import TeleBot, types
 
@@ -19,11 +18,13 @@ from core.brain import brain
 
 # Global cooldown dictionary imported from cooldown module
 from core.cooldown import cooldowns
+from core.llm import llm_engine
 from core.memory import memory
 from database.db import ensure_user_profile_exists, save_message
 from utils.identity import extract_telegram_identity
 from utils.photo import extract_photo_url
 from utils.triggers import is_calling_tars, is_reply_to_bot
+from utils.typing_action import typing_action
 
 
 def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -117,12 +118,9 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     # --- Logging ---
     used_ctx, total_mem = memory.get_stats(chat_id)
     logging.info(
-        f"Processing | chat={chat_id} user={user_id} type={'IMG' if photo_url else 'TXT'} mem={used_ctx}/{total_mem}"
+        f"Processing ({llm_engine.provider.name}) | chat={chat_id} user={user_id} "
+        f"type={'IMG' if photo_url else 'TXT'} mem={used_ctx}/{total_mem}"
     )
-
-    # --- Simulate typing ---
-    bot.send_chat_action(chat_id, "typing")
-    time.sleep(random.uniform(0.5, 1.2))  # simulate thinking delay
 
     # Capture the quoted message's text whenever this is a reply, so the LLM knows
     # exactly what is being answered. This covers two cases:
@@ -137,26 +135,31 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         reply_to_is_bot = is_reply
 
     # --- Generate reply ---
-    if photo_url and (has_trigger or is_reply):
-        reply = brain.analyze_image(
-            chat_id=chat_id,
-            user_id=user_id,
-            image_url=photo_url,
-            caption=caption,
-            identity=identity,
-            reply_to_text=reply_to_text,
-            reply_to_is_bot=reply_to_is_bot,
-            photo_from_reply=photo_from_reply,
-        )
-    else:
-        reply = brain.think(
-            chat_id=chat_id,
-            user_id=user_id,
-            user_message=text_content[:1500],  # MAX_INPUT_CHARS
-            identity=identity,
-            reply_to_text=reply_to_text,
-            reply_to_is_bot=reply_to_is_bot,
-        )
+    # "typing" is shown the moment we commit to answering and kept alive (refreshed
+    # every few seconds, since Telegram clears it after ~5s) for as long as the LLM
+    # call takes — including the DB writes brain.think()/analyze_image() do before
+    # returning. It stops as soon as we have the reply, right before it is sent.
+    with typing_action(bot, chat_id):
+        if photo_url and (has_trigger or is_reply):
+            reply = brain.analyze_image(
+                chat_id=chat_id,
+                user_id=user_id,
+                image_url=photo_url,
+                caption=caption,
+                identity=identity,
+                reply_to_text=reply_to_text,
+                reply_to_is_bot=reply_to_is_bot,
+                photo_from_reply=photo_from_reply,
+            )
+        else:
+            reply = brain.think(
+                chat_id=chat_id,
+                user_id=user_id,
+                user_message=text_content[:1500],  # MAX_INPUT_CHARS
+                identity=identity,
+                reply_to_text=reply_to_text,
+                reply_to_is_bot=reply_to_is_bot,
+            )
 
     # --- Send reply ---
     try:
