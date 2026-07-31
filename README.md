@@ -4,6 +4,10 @@ TARS is a Telegram bot for the Russian astronomy community, named after the AI f
 
 ![TARS](docs/cover.jpg)
 
+[![Checks](https://github.com/miksrv/telegram-ai-bot/actions/workflows/checks.yml/badge.svg)](https://github.com/miksrv/telegram-ai-bot/actions/workflows/checks.yml)
+[![Quality Gate](https://github.com/miksrv/telegram-ai-bot/actions/workflows/sonarcloud.yml/badge.svg)](https://github.com/miksrv/telegram-ai-bot/actions/workflows/sonarcloud.yml)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=miksrv_telegram-ai-bot&metric=coverage)](https://sonarcloud.io/summary/new_code?id=miksrv_telegram-ai-bot)
+
 ---
 
 ## Companion services
