@@ -2,6 +2,8 @@
 
 TARS is a Telegram bot for the Russian astronomy community, named after the AI from *Interstellar*. It combines a conversational AI assistant (Groq or OpenAI/ChatGPT, switchable via config) with a CubeSat satellite ground station interface and an on-demand star-chart generator, both over MQTT.
 
+![TARS](docs/cover.jpg)
+
 ---
 
 ## Companion services
