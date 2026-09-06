@@ -7,6 +7,7 @@ import requests
 
 from config.settings import MAX_INPUT_CHARS, PROACTIVE_CONTEXT_MESSAGES, PROACTIVE_MIN_CONTEXT_MESSAGES
 from core.llm import llm_engine
+from core.llm.base import LLMEmptyResponseError
 from core.memory import memory
 from core.personality_engine import PersonalityEngine
 from core.prompts import (
@@ -31,6 +32,13 @@ from database.profile_repo import (
 # --------------------------------------------------
 
 session = requests.Session()
+
+# User-facing fallbacks. Kept as constants so handlers/tests can compare
+# against them and so the wording lives in exactly one place.
+LLM_FAILURE_REPLY = "Сбой логического модуля. Пожалуйста, попробуйте позже."
+LLM_BAD_RESPONSE_REPLY = "Ошибка ответа логического модуля"
+LLM_REFUSAL_REPLY = "Логический модуль отклонил этот запрос. Попробуйте переформулировать вопрос."
+VISION_FAILURE_REPLY = "Ошибка визуального модуля"
 
 
 # ==================================================
@@ -79,9 +87,16 @@ class TARSBrain:
 
             return reply
 
+        except LLMEmptyResponseError as e:
+            # The API answered fine but the model produced no text — almost always a
+            # refusal/content filter on this particular message. Not a bot fault, so
+            # no stack trace and no "try again later": the same input would refuse again.
+            logging.warning(f"LLM refused/empty completion (chat={chat_id} user={user_id}): {e}")
+            return LLM_REFUSAL_REPLY
+
         except Exception as e:
             logging.exception(f"Text gen error: {e}")
-            return "Сбой логического модуля. Пожалуйста, попробуйте позже."
+            return LLM_FAILURE_REPLY
 
     # --------------------------------------------------
     # IMAGE ANALYSIS
@@ -163,9 +178,13 @@ class TARSBrain:
 
             return reply
 
+        except LLMEmptyResponseError as e:
+            logging.warning(f"Vision model refused/empty completion (chat={chat_id} user={user_id}): {e}")
+            return LLM_REFUSAL_REPLY
+
         except Exception as e:
             logging.exception(f"Vision error: {e}")
-            return "Ошибка визуального модуля"
+            return VISION_FAILURE_REPLY
 
     # --------------------------------------------------
     # Core LLM response processing (shared logic for text and vision)
@@ -191,13 +210,16 @@ class TARSBrain:
         )
 
         data = self._parse_json_safe(raw)
-        if not data:
-            return None, "Ошибка ответа логического модуля"
+        if not isinstance(data, dict) or not data:
+            return None, LLM_BAD_RESPONSE_REPLY
 
-        reply = data.get("reply", "").strip()
+        # The model occasionally returns `"reply": null` or a non-string value
+        # despite the schema in the prompt — treat anything but real text as empty.
+        reply = data.get("reply")
+        reply = reply.strip() if isinstance(reply, str) else ""
         if not reply:
             logging.error(f"LLM returned empty reply field: {raw}")
-            return None, "Ошибка ответа логического модуля"
+            return None, LLM_BAD_RESPONSE_REPLY
 
         # Memory update
         memory.add_chat_memory(chat_id, user_id, user_input, reply)
@@ -405,15 +427,32 @@ class TARSBrain:
     # Robust JSON parsing (handles common model formatting issues)
     # --------------------------------------------------
     def _parse_json_safe(self, raw):
+        """Parses the model's JSON output, tolerating stray text around the object.
+
+        Never raises: a completely unparseable payload returns None so the caller
+        can report a clean "bad response" instead of a generic module failure.
+        """
+        if not isinstance(raw, str) or not raw.strip():
+            logging.error(f"Unrecoverable JSON (empty/non-text payload): {raw!r}")
+            return None
+
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start != -1 and end != -1:
+            pass
+
+        # Fallback: model wrapped the object in prose/markdown fences — cut out the
+        # outermost {...} and try again.
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            try:
                 return json.loads(raw[start:end])
-            logging.error(f"Unrecoverable JSON: {raw}")
-            return None
+            except json.JSONDecodeError:
+                pass
+
+        logging.error(f"Unrecoverable JSON: {raw}")
+        return None
 
 
 # Singleton brain instance

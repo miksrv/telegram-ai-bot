@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from core.llm.base import LLMQuotaExceededError, is_quota_error
+from core.llm.base import LLMEmptyResponseError, LLMQuotaExceededError, is_quota_error
 from core.llm.engine import LLMEngine
 from core.llm.groq_provider import GroqProvider
 from core.llm.openai_provider import OpenAIProvider
@@ -155,3 +155,50 @@ def test_engine_quota_error_without_fallback_propagates(monkeypatch):
 
     with pytest.raises(LLMQuotaExceededError):
         engine.complete([{"role": "user", "content": "hi"}], temperature=0.5, max_tokens=10, top_p=1)
+
+
+# --------------------------------------------------
+# Providers: a 200 OK whose message.content is null (OpenAI refusal in JSON
+# mode) must raise LLMEmptyResponseError, not AttributeError from .strip().
+# --------------------------------------------------
+
+
+@pytest.mark.parametrize("provider_cls", [GroqProvider, OpenAIProvider])
+def test_provider_complete_raises_on_null_content(monkeypatch, provider_cls):
+    monkeypatch.setattr("core.llm.openai_provider.OPENAI_API_KEY", "fake_openai_key")
+    refusal_body = {
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": None, "refusal": "no"}}]
+    }
+    module = "core.llm.openai_provider" if provider_cls is OpenAIProvider else "core.llm.groq_provider"
+    monkeypatch.setattr(f"{module}.post_with_retry", lambda *a, **kw: _FakeResponse(200, refusal_body))
+
+    provider = provider_cls()
+    with pytest.raises(LLMEmptyResponseError):
+        provider.complete([{"role": "user", "content": "hi"}], temperature=0.5, max_tokens=10, top_p=1)
+
+
+def test_provider_complete_returns_text_content(monkeypatch):
+    body = {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": ' {"reply": "ok"} '}}]}
+    monkeypatch.setattr("core.llm.groq_provider.post_with_retry", lambda *a, **kw: _FakeResponse(200, body))
+
+    assert GroqProvider().complete([{"role": "user", "content": "hi"}], temperature=0.5, max_tokens=10, top_p=1) == (
+        '{"reply": "ok"}'
+    )
+
+
+def test_engine_does_not_fall_back_on_empty_response(monkeypatch):
+    """A refusal is not a quota problem — the standby provider must not be consumed for it."""
+    # "openai" primary picks up "groq" as the standby (GROQ_API_KEY is set by conftest).
+    monkeypatch.setattr("core.llm.openai_provider.OPENAI_API_KEY", "fake_openai_key")
+    engine = LLMEngine(engine_name="openai")
+    assert isinstance(engine.fallback_provider, GroqProvider)
+
+    def refuse(self, messages, **kw):
+        raise LLMEmptyResponseError("openai", finish_reason="stop", refusal="no")
+
+    monkeypatch.setattr(OpenAIProvider, "complete", refuse)
+
+    with pytest.raises(LLMEmptyResponseError):
+        engine.complete([{"role": "user", "content": "hi"}], temperature=0.5, max_tokens=10, top_p=1)
+    assert isinstance(engine.provider, OpenAIProvider)
+    assert isinstance(engine.fallback_provider, GroqProvider)
