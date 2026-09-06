@@ -281,3 +281,88 @@ def test_post_proactive_reply_returns_none_on_insufficient_context(monkeypatch):
 
     reply = brain_mod.brain.post_proactive_reply(chat_id=123, target_text="что-то", target_author="Кто-то")
     assert reply is None
+
+
+# --------------------------------------------------
+# think() — model refusal / empty completion (OpenAI `content: null`) must give
+# the user a clear in-character answer, not "Сбой логического модуля".
+# --------------------------------------------------
+
+
+def _think(brain_mod, user_id=7_777_001):
+    return brain_mod.brain.think(
+        chat_id=555_001,
+        user_id=user_id,
+        user_message="привет",
+        identity={"id": user_id, "first_name": "CI"},
+    )
+
+
+def test_think_returns_refusal_reply_on_empty_completion(monkeypatch):
+    from core import brain as brain_mod
+    from core.llm.base import LLMEmptyResponseError
+
+    def refuse(self, *a, **kw):
+        raise LLMEmptyResponseError("openai", finish_reason="stop", refusal="I can't help with that.")
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", refuse)
+
+    assert _think(brain_mod) == brain_mod.LLM_REFUSAL_REPLY
+
+
+def test_think_returns_failure_reply_on_unexpected_exception(monkeypatch):
+    from core import brain as brain_mod
+
+    def boom(self, *a, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", boom)
+
+    assert _think(brain_mod) == brain_mod.LLM_FAILURE_REPLY
+
+
+def test_think_returns_bad_response_reply_on_garbage_json(monkeypatch):
+    """Braces around non-JSON used to raise from _parse_json_safe's second json.loads."""
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", lambda self, *a, **kw: 'Sure! {reply: "unquoted"}')
+
+    assert _think(brain_mod) == brain_mod.LLM_BAD_RESPONSE_REPLY
+
+
+# --------------------------------------------------
+# _parse_json_safe / reply validation — never raise on odd model output
+# --------------------------------------------------
+
+
+def test_parse_json_safe_never_raises():
+    brain = make_brain()
+    assert brain._parse_json_safe('{"reply": "ok"}') == {"reply": "ok"}
+    assert brain._parse_json_safe('```json\n{"reply": "ok"}\n```') == {"reply": "ok"}
+    assert brain._parse_json_safe('{reply: "unquoted"}') is None
+    assert brain._parse_json_safe("no json here") is None
+    assert brain._parse_json_safe("") is None
+    assert brain._parse_json_safe(None) is None
+
+
+def test_process_llm_response_treats_null_or_non_string_reply_as_error(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    brain = make_brain()
+    for raw in ('{"reply": null}', '{"reply": ["a"]}', '["not", "an", "object"]'):
+        monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", lambda self, *a, _raw=raw, **kw: _raw)
+        reply, err = brain._process_llm_response(
+            "text",
+            [{"role": "system", "content": "SYS"}],
+            temperature=0.8,
+            max_tokens=100,
+            top_p=0.9,
+            chat_id=1,
+            user_id=2,
+            user_input="hi",
+        )
+        assert reply is None
+        assert err == brain_mod.LLM_BAD_RESPONSE_REPLY

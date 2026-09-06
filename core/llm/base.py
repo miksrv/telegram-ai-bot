@@ -29,6 +29,66 @@ class LLMQuotaExceededError(Exception):
     configured fallback provider instead of just propagating the error."""
 
 
+class LLMEmptyResponseError(Exception):
+    """Raised by a provider when the API answered 200 OK but the completion
+    carries no usable text (see extract_message_content).
+
+    The common real-world case is a model refusal: with
+    `response_format: json_object` OpenAI returns `message.content: null` and
+    puts the refusal text in `message.refusal` (or sets
+    `finish_reason: content_filter`). That is not a transport failure, so it is
+    kept distinct from HTTP errors — the caller can answer the user in-character
+    instead of reporting a generic "logic module failure"."""
+
+    def __init__(self, provider: str, finish_reason=None, refusal=None, detail=None):
+        self.provider = provider
+        self.finish_reason = finish_reason
+        self.refusal = refusal
+        self.detail = detail
+        parts = [f"{provider}: completion has no text content"]
+        if finish_reason:
+            parts.append(f"finish_reason={finish_reason}")
+        if refusal:
+            parts.append(f"refusal={refusal!r}")
+        if detail:
+            parts.append(detail)
+        super().__init__("; ".join(parts))
+
+
+def extract_message_content(body: dict, provider: str) -> str:
+    """Pulls the assistant text out of a chat-completions response body.
+
+    Groq and OpenAI share the same `{"choices": [{"message": {...}, "finish_reason": ...}]}`
+    shape. Returns the stripped text; raises LLMEmptyResponseError when the
+    content is missing/null/blank (model refusal, content filter, or a malformed
+    body) instead of letting an AttributeError escape from `.strip()`.
+    """
+    try:
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+    except (KeyError, IndexError, TypeError, AttributeError) as e:
+        raise LLMEmptyResponseError(provider, detail=f"malformed response body: {e!r}") from e
+
+    content = message.get("content")
+
+    # Some OpenAI-compatible backends return content as a list of parts.
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    finish_reason = choice.get("finish_reason")
+    refusal = message.get("refusal")
+    logging.warning(
+        f"{provider} returned an empty completion: finish_reason={finish_reason!r} refusal={refusal!r} "
+        f"content={content!r}"
+    )
+    raise LLMEmptyResponseError(provider, finish_reason=finish_reason, refusal=refusal)
+
+
 def is_quota_error(response) -> bool:
     """True if an HTTP error response indicates quota/billing exhaustion."""
     if response is None:

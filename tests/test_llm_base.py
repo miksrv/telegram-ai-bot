@@ -1,3 +1,4 @@
+import pytest
 import requests
 
 from core.llm import base as llm_base
@@ -102,3 +103,56 @@ def test_post_with_retry_gives_up_after_exhausting_retries(monkeypatch):
         pass
 
     assert session.calls == 3
+
+
+# --------------------------------------------------
+# extract_message_content — null/blank content (model refusal, content filter,
+# malformed body) must surface as LLMEmptyResponseError, never AttributeError.
+# --------------------------------------------------
+
+
+def test_extract_message_content_returns_stripped_text():
+    body = {"choices": [{"message": {"role": "assistant", "content": '  {"reply": "ok"}\n'}}]}
+    assert llm_base.extract_message_content(body, "openai") == '{"reply": "ok"}'
+
+
+def test_extract_message_content_joins_text_parts():
+    body = {
+        "choices": [
+            {"message": {"content": [{"type": "text", "text": '{"reply": '}, {"type": "text", "text": '"ok"}'}]}}
+        ]
+    }
+    assert llm_base.extract_message_content(body, "groq") == '{"reply": "ok"}'
+
+
+def test_extract_message_content_raises_on_refusal():
+    body = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": None, "refusal": "I'm sorry, I can't help with that."},
+            }
+        ]
+    }
+    with pytest.raises(llm_base.LLMEmptyResponseError) as exc:
+        llm_base.extract_message_content(body, "openai")
+    assert exc.value.provider == "openai"
+    assert exc.value.refusal == "I'm sorry, I can't help with that."
+    assert exc.value.finish_reason == "stop"
+
+
+def test_extract_message_content_raises_on_content_filter_and_blank():
+    with pytest.raises(llm_base.LLMEmptyResponseError) as exc:
+        llm_base.extract_message_content(
+            {"choices": [{"finish_reason": "content_filter", "message": {"content": None}}]}, "openai"
+        )
+    assert exc.value.finish_reason == "content_filter"
+
+    with pytest.raises(llm_base.LLMEmptyResponseError):
+        llm_base.extract_message_content({"choices": [{"message": {"content": "   "}}]}, "groq")
+
+
+def test_extract_message_content_raises_on_malformed_body():
+    for body in ({}, {"choices": []}, {"choices": [None]}, None):
+        with pytest.raises(llm_base.LLMEmptyResponseError):
+            llm_base.extract_message_content(body, "openai")

@@ -1,7 +1,14 @@
 import requests
 
 from config.settings import GROQ_API_KEY, GROQ_MODEL_TEXT, GROQ_MODEL_VISION
-from core.llm.base import LLMProvider, LLMQuotaExceededError, build_session, is_quota_error, post_with_retry
+from core.llm.base import (
+    LLMProvider,
+    LLMQuotaExceededError,
+    build_session,
+    extract_message_content,
+    is_quota_error,
+    post_with_retry,
+)
 
 
 class GroqProvider(LLMProvider):
@@ -49,4 +56,4 @@ class GroqProvider(LLMProvider):
                 raise LLMQuotaExceededError(f"{self.name}: {e}") from e
             raise
 
-        return response.json()["choices"][0]["message"]["content"].strip()
+        return extract_message_content(response.json(), self.name)
