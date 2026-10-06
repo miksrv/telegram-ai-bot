@@ -11,6 +11,7 @@ from telebot.types import BotCommand, Message
 from config.settings import ALLOWED_CHAT_IDS, BOT_TOKEN
 from handlers import (
     help_handler,
+    image_handler,
     message_handler,
     photo_handler,
     starmap_handler,
@@ -41,6 +42,11 @@ def init_bot() -> TeleBot:
     @bot.message_handler(commands=["weather"])
     def _weather_handler(message: Message):
         weather_handler.handle_weather(bot, message, ALLOWED_CHAT_IDS)
+
+    # --- Image generation command handler ---
+    @bot.message_handler(commands=["image"])
+    def _image_handler(message: Message):
+        image_handler.handle_image(bot, message, ALLOWED_CHAT_IDS)
 
     # --- Starmap (star-chart) command handlers ---
     @bot.message_handler(commands=["sky"])
@@ -91,6 +97,7 @@ def _build_commands(starmap_online: bool):
         BotCommand("weather", "Погода для наблюдений: /weather <город>"),
         #         BotCommand("status", "Телеметрия спутника CubeSat"),
         #         BotCommand("photo", "Снимок с камеры CubeSat"),
+        BotCommand("image", "Сгенерировать изображение: /image <описание>"),
         BotCommand("stats", "Статистика бота"),
     ]
     if starmap_online:
