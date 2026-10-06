@@ -107,11 +107,11 @@ def test_register_request_can_be_unbounded():
 
 
 def test_menu_hides_starmap_commands_when_offline():
-    assert len(_build_commands(False)) == 3
+    assert len(_build_commands(False)) == 4
 
 
 def test_menu_adds_starmap_commands_when_online():
-    assert len(_build_commands(True)) == 7
+    assert len(_build_commands(True)) == 8
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,22 @@ OPENAI_MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")
 OPENAI_MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o-mini")
 
 # --------------------------------------------------
+# Image generation (/image)
+# --------------------------------------------------
+# Always goes straight to OpenAI's Images API regardless of LLM_ENGINE — this
+# is a separate API surface from chat completions, not routed through
+# core/llm/engine.py's provider registry.
+
+IMAGE_GEN_ENABLED = os.getenv("IMAGE_GEN_ENABLED", "true").lower() == "true"
+IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-2.5-sunburst")
+IMAGE_GEN_MAX_PER_DAY = int(os.getenv("IMAGE_GEN_MAX_PER_DAY", "5"))
+IMAGE_GEN_SIZE = os.getenv("IMAGE_GEN_SIZE", "1024x1024")
+
+# Independent of LLM_ENGINE==openai above: either reason requires the same key.
+if IMAGE_GEN_ENABLED and not OPENAI_API_KEY:
+    raise RuntimeError("IMAGE_GEN_ENABLED=true requires OPENAI_API_KEY to be set")
+
+# --------------------------------------------------
 # Limits / Behavior
 # --------------------------------------------------
 

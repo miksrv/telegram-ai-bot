@@ -47,6 +47,6 @@ def test_format_stats_is_russian_and_includes_numbers():
 
 
 def test_help_text_lists_all_commands():
-    for cmd in ("/help", "/weather", "/status", "/photo", "/stats"):
+    for cmd in ("/help", "/weather", "/status", "/photo", "/stats", "/image"):
         assert cmd in HELP_TEXT
     assert "astronom_chat" in HELP_TEXT

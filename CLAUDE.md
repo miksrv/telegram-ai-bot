@@ -22,7 +22,7 @@ core/
   cooldown.py                    # CooldownManager: sliding window rate limiter
   proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the once-daily direct reply
 database/
-  db.py                          # SQLite: user_profile, chat_memory, user_memory, messages tables; all CRUD + memory persistence (flush_memory/load_memory)
+  db.py                          # SQLite: user_profile, chat_memory, user_memory, messages, image_generation_usage tables; all CRUD + memory persistence (flush_memory/load_memory)
   profile_repo.py                # Re-exports db.py functions used by brain.py
 handlers/
   message_handler.py             # Main message routing: observe block, trigger detection, cooldowns, dispatch
@@ -32,12 +32,14 @@ handlers/
   stats_handler.py               # /stats: aggregate DB statistics (db.get_db_stats), Russian output
   help_handler.py                # /help, /start: static bot description + command list (Russian)
   starmap_handler.py             # /sky, /horizon, /skymap, /galaxy: requests star charts from starmap-service via MQTT
-  delivery.py                    # Shared status-message lifecycle (safe_reply/safe_delete) for MQTT result delivery (/photo + starmap)
+  image_handler.py               # /image: generates an image via services/image_service.py, enforces the per-user daily quota
+  delivery.py                    # Shared status-message lifecycle (safe_reply/safe_delete) for MQTT result delivery (/photo + starmap) and reused by /image
 services/
   telegram_service.py            # Bot init, handler registration
   mqtt_service.py                # MQTT client, per-request response queues keyed by request_id (paho-mqtt); tracks starmap-service availability from its retained status topic + notifies listeners
   background_service.py          # Cleanup daemon + proactive posting daemon threads
   weather_service.py             # OpenWeatherMap client: get_weather() (used by weather_handler) + get_coordinates() (city → lat/lon, reused by starmap commands)
+  image_service.py                # OpenAI Images API client for /image: generate_image() + its own exception hierarchy; always talks to OpenAI directly, independent of LLM_ENGINE
   startup_notifier.py            # send_startup_notification(): DMs every ADMIN_IDS user once at boot with allowed chats, active LLM engine/model, MQTT status, proactive status
 utils/
   triggers.py                    # Trigger word detection + is_reply_to_bot
@@ -106,6 +108,14 @@ Integration with the separate **starmap-service** repo (its `API.md` is the shar
 2. Posts a transient "Запрашиваю фото…" status message as a reply to the command, then spawns a background daemon thread that waits up to 45s for the matching reply on `cubesat/payload/photo` (polling thread is **not** blocked)
 3. On success: deletes the status message and decodes the base64 image, sending it **as a photo** (`bot.send_photo`, compressed) replying to the command; on failure/timeout it deletes the status message and replies with the reason. Uses the same `safe_reply`/`safe_delete` lifecycle helpers (`handlers/delivery.py`) as the starmap commands — the only difference is photo vs document. The queue is unregistered when done
 
+### Image generation (/image)
+Always calls OpenAI's Images API directly (`services/image_service.py`) regardless of `LLM_ENGINE` — this is a separate API surface from chat completions, not routed through `core/llm/engine.py`, so it works even when the bot's conversational engine is Groq.
+1. `image_handler.handle_image` gates on chat access, then extracts the prompt as everything after `/image ` (or `/image@botname `); an empty prompt gets a short Russian usage reply and nothing else runs
+2. Applies the same spam cooldown as every other command (`core.cooldown.cooldowns.allowed(user_id)`) before touching OpenAI, then checks the persisted daily quota: `database.db.get_image_usage_count(user_id) >= IMAGE_GEN_MAX_PER_DAY` (default 5/day, resets at UTC midnight) — both rejections reply in Russian and consume neither cooldown slot beyond the normal check nor the quota
+3. Posts a transient "Генерирую изображение…" status message as a reply to the command (`handlers/delivery.py`'s `safe_reply`, same lifecycle as `/photo`/starmap), then calls `services.image_service.generate_image(prompt)` inside a `utils.typing_action.typing_action(bot, chat_id)` block — `model=IMAGE_GEN_MODEL` (default `gpt-image-2.5-sunburst`), `quality=low`, `size=IMAGE_GEN_SIZE`, reusing `build_session`/`post_with_retry`/`is_quota_error` from `core/llm/base.py` for the HTTP call
+4. On success: `database.db.increment_image_usage(user_id)` consumes one unit of the daily quota, the status message is deleted, and the decoded PNG bytes are sent with `bot.send_photo` replying to the original command
+5. On failure the status message is deleted and the quota is **not** consumed: `ImageContentPolicyError` (OpenAI moderation rejection) gets a "rejected by moderation" reply, `ImageQuotaExceededError` (OpenAI billing/quota exhaustion) gets a "temporarily unavailable" reply and is logged at error level (an operational signal, not a user error), and any other exception gets a generic Russian failure reply and a logged traceback
+
 ## Configuration (.env)
 
 Copy `.env.example` to `.env`. Required variables:
@@ -141,6 +151,10 @@ GROQ_MODEL_TEXT=            # Override Groq's text model (default: llama-3.3-70b
 GROQ_MODEL_VISION=          # Override Groq's vision model (default: meta-llama/llama-4-scout-17b-16e-instruct)
 OPENAI_MODEL_TEXT=          # Override OpenAI's text model (default: gpt-4o-mini)
 OPENAI_MODEL_VISION=        # Override OpenAI's vision model (default: gpt-4o-mini)
+IMAGE_GEN_ENABLED=          # Master toggle for the /image command (default: true); when true OPENAI_API_KEY is required even if LLM_ENGINE=groq
+IMAGE_GEN_MODEL=            # OpenAI image generation model (default: gpt-image-2.5-sunburst)
+IMAGE_GEN_MAX_PER_DAY=      # Per-user daily /image quota, persisted in SQLite (default: 5)
+IMAGE_GEN_SIZE=             # Output image size passed to the Images API (default: 1024x1024)
 ```
 
 `PROACTIVE_CHAT_IDS` is intersected with `ALLOWED_CHAT_IDS` at load time; IDs outside the allowed set are dropped with a warning.
@@ -193,6 +207,12 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 - Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via an exponential moving average (`avg = alpha * sample + (1 - alpha) * avg`, `PROFILE_EMA_ALPHA`, default `0.3`) only on full-update turns (first message + every 5th). EMA (not a cumulative average) is deliberate: since updates only land on a fraction of turns, a cumulative average keyed on `message_count` would shrink each new sample's weight too fast and freeze the profile
 - `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt
 - `notes` is an LLM-maintained free-text summary of the user, fully replaced each time it runs
+
+## Image Generation Quota
+
+- Persisted in SQLite, table `image_generation_usage(user_id, usage_date, count)`, primary key `(user_id, usage_date)` — `usage_date` is the UTC calendar date, so the quota resets at UTC midnight like the proactive daily caps
+- `database.db.get_image_usage_count(user_id)` reads today's count (0 if no row yet); `database.db.increment_image_usage(user_id)` upserts it — only called after a successful generation, never on failure, so a rejected/failed attempt doesn't cost the user their quota
+- Separate from the in-RAM spam cooldown (`core.cooldown`): the cooldown throttles request *rate*, this quota caps daily *spend* on OpenAI's Images API
 
 ## Rate Limiting
 
