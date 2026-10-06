@@ -270,9 +270,14 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     # Merge interests newest-first with a stable dedup, capped at 20. Putting
     # incoming before existing means that when the cap is hit the OLDEST entries
     # are dropped, not the freshest — and order is deterministic (unlike a set).
+    incoming_interests = profile_update.get("interests", [])
+    if not isinstance(incoming_interests, list):
+        logging.warning(f"Ignoring non-list interests in profile_update for user {user_id}: {incoming_interests!r}")
+        incoming_interests = []
+
     seen = set()
     merged = []
-    for item in list(profile_update.get("interests", [])) + list(profile["interests"]):
+    for item in list(incoming_interests) + list(profile["interests"]):
         key = str(item).strip()
         if key and key not in seen:
             seen.add(key)

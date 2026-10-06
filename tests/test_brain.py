@@ -1,3 +1,6 @@
+import json
+import logging
+
 from core.brain import TARSBrain
 
 
@@ -343,6 +346,177 @@ def test_parse_json_safe_never_raises():
     assert brain._parse_json_safe("no json here") is None
     assert brain._parse_json_safe("") is None
     assert brain._parse_json_safe(None) is None
+
+
+# --------------------------------------------------
+# _apply_profile_update / notes normalization — malformed model output must
+# never turn an already-valid reply into a failure (see incident: gpt-4o-mini
+# once returned `notes` as a dict, crashing sqlite3's parameter binding).
+# --------------------------------------------------
+
+
+def test_notes_dict_is_serialized_and_reply_still_returned(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(
+        brain_mod.TARSBrain,
+        "_call_llm",
+        lambda self, *a, **kw: json.dumps({"reply": "привет!", "notes": {"summary": "любит Сатурн"}}),
+    )
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    captured = {}
+    monkeypatch.setattr(brain_mod, "db_update_user_notes", lambda user_id, notes: captured.setdefault("notes", notes))
+
+    reply, err = make_brain()._process_llm_response(
+        "text",
+        [{"role": "system", "content": "SYS"}],
+        temperature=0.8,
+        max_tokens=100,
+        top_p=0.9,
+        chat_id=1,
+        user_id=2,
+        user_input="hi",
+    )
+
+    assert err is None
+    assert reply == "привет!"
+    assert isinstance(captured["notes"], str)
+    assert "summary" in captured["notes"]
+    assert "любит Сатурн" in captured["notes"]
+
+
+def test_notes_list_is_serialized_to_string(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(
+        brain_mod.TARSBrain,
+        "_call_llm",
+        lambda self, *a, **kw: json.dumps({"reply": "ok", "notes": ["интересуется", "астрофото"]}),
+    )
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    captured = {}
+    monkeypatch.setattr(brain_mod, "db_update_user_notes", lambda user_id, notes: captured.setdefault("notes", notes))
+
+    reply, err = make_brain()._process_llm_response(
+        "text",
+        [{"role": "system", "content": "SYS"}],
+        temperature=0.8,
+        max_tokens=100,
+        top_p=0.9,
+        chat_id=1,
+        user_id=2,
+        user_input="hi",
+    )
+
+    assert err is None
+    assert reply == "ok"
+    assert isinstance(captured["notes"], str)
+    assert "астрофото" in captured["notes"]
+
+
+def test_notes_non_string_junk_is_ignored(monkeypatch, caplog):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(
+        brain_mod.TARSBrain,
+        "_call_llm",
+        lambda self, *a, **kw: json.dumps({"reply": "ok", "notes": 12345}),
+    )
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    called = []
+    monkeypatch.setattr(brain_mod, "db_update_user_notes", lambda *a, **kw: called.append(True))
+
+    with caplog.at_level(logging.WARNING):
+        reply, err = make_brain()._process_llm_response(
+            "text",
+            [{"role": "system", "content": "SYS"}],
+            temperature=0.8,
+            max_tokens=100,
+            top_p=0.9,
+            chat_id=1,
+            user_id=2,
+            user_input="hi",
+        )
+
+    assert err is None
+    assert reply == "ok"
+    assert not called
+    assert any("notes" in rec.message.lower() for rec in caplog.records)
+
+
+def test_profile_update_not_a_dict_is_ignored(monkeypatch, caplog):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(
+        brain_mod.TARSBrain,
+        "_call_llm",
+        lambda self, *a, **kw: json.dumps({"reply": "ok", "profile_update": "not a dict"}),
+    )
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    called = []
+    monkeypatch.setattr(brain_mod, "db_update_user_profile", lambda *a, **kw: called.append(True))
+
+    with caplog.at_level(logging.WARNING):
+        reply, err = make_brain()._process_llm_response(
+            "text",
+            [{"role": "system", "content": "SYS"}],
+            temperature=0.8,
+            max_tokens=100,
+            top_p=0.9,
+            chat_id=1,
+            user_id=2,
+            user_input="hi",
+        )
+
+    assert err is None
+    assert reply == "ok"
+    assert not called
+    assert any("profile_update" in rec.message for rec in caplog.records)
+
+
+def test_db_error_during_profile_update_still_returns_reply(monkeypatch, caplog):
+    """A DB failure while applying the optional side effects must not cost the
+    user the reply that was already generated (the original incident: a
+    sqlite3.ProgrammingError here used to propagate and answer with
+    LLM_FAILURE_REPLY instead)."""
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(
+        brain_mod.TARSBrain,
+        "_call_llm",
+        lambda self, *a, **kw: json.dumps({"reply": "ok", "notes": "обычная строка"}),
+    )
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    def _raise(*a, **kw):
+        raise RuntimeError("sqlite3.ProgrammingError: Error binding parameter 1")
+
+    monkeypatch.setattr(brain_mod, "db_update_user_notes", _raise)
+
+    with caplog.at_level(logging.ERROR):
+        reply, err = make_brain()._process_llm_response(
+            "text",
+            [{"role": "system", "content": "SYS"}],
+            temperature=0.8,
+            max_tokens=100,
+            top_p=0.9,
+            chat_id=1,
+            user_id=2,
+            user_input="hi",
+        )
+
+    assert err is None
+    assert reply == "ok"
+    assert any("profile/notes" in rec.message.lower() for rec in caplog.records)
 
 
 def test_process_llm_response_treats_null_or_non_string_reply_as_error(monkeypatch):

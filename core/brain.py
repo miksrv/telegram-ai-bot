@@ -227,18 +227,59 @@ class TARSBrain:
         # Always increment the interaction counter
         db_increment_message_count(user_id)
 
-        # Profile update only on designated turns (first message + every 5th)
+        # Profile update only on designated turns (first message + every 5th).
+        # These are optional side effects of an already-valid reply: a malformed
+        # field or a DB error here must never turn a good reply into a failure
+        # (see _apply_profile_update).
         if update_profile:
-            profile_update = data.get("profile_update", {})
-            notes = data.get("notes")
-
-            if profile_update:
-                db_update_user_profile(user_id, profile_update)
-
-            if notes:
-                db_update_user_notes(user_id, notes)
+            self._apply_profile_update(user_id, data)
 
         return reply, None
+
+    # --------------------------------------------------
+    # Optional profile/notes side effects (full-update turns only)
+    # --------------------------------------------------
+    def _apply_profile_update(self, user_id, data: dict):
+        """Applies `profile_update`/`notes` from a full-update LLM response.
+
+        Both fields are defensively validated against malformed model output
+        (e.g. a dict/list where the prompt asked for a string) and the whole
+        block is wrapped so any exception — a bad shape or a DB error — is only
+        logged, never raised: the reply itself was already produced and must
+        still reach the user regardless of what happens here.
+        """
+        try:
+            profile_update = data.get("profile_update")
+            if profile_update:
+                if isinstance(profile_update, dict):
+                    db_update_user_profile(user_id, profile_update)
+                else:
+                    logging.warning(f"Ignoring non-dict profile_update for user {user_id}: {profile_update!r}")
+
+            notes = self._normalize_notes(data.get("notes"))
+            if notes:
+                db_update_user_notes(user_id, notes)
+        except Exception:
+            logging.exception(f"Failed to apply profile/notes update for user {user_id}")
+
+    @staticmethod
+    def _normalize_notes(notes):
+        """Coerces the model's `notes` field into a plain string for storage.
+
+        The documented contract is a string, but the model occasionally returns
+        a structured value instead (observed: a dict). A str is stripped and
+        used only if non-empty; a dict/list is serialized to JSON text instead
+        of being passed straight to sqlite3 (which raises ProgrammingError on
+        non-primitive bind parameters); anything else is dropped with a warning.
+        """
+        if isinstance(notes, str):
+            return notes.strip()
+        if isinstance(notes, (dict, list)):
+            return json.dumps(notes, ensure_ascii=False)
+        if notes is None or notes == "":
+            return ""
+        logging.warning(f"Ignoring notes of unexpected type {type(notes).__name__}: {notes!r}")
+        return ""
 
     # --------------------------------------------------
     # Context building (for both text and vision)
