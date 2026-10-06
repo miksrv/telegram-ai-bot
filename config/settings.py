@@ -148,6 +148,24 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "tars_user_profiles.db")
 
 # --------------------------------------------------
+# Versioning
+# --------------------------------------------------
+# Single source of truth is the VERSION file at the repo root (see "Versioning
+# & Releases" in CLAUDE.md). Read once at import time; a missing file (e.g. a
+# packaging mistake) falls back to "unknown" rather than crashing the bot.
+
+
+def _read_version() -> str:
+    try:
+        with open(os.path.join(BASE_DIR, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "unknown"
+
+
+BOT_VERSION = _read_version()
+
+# --------------------------------------------------
 # Allowed shell commands
 # --------------------------------------------------
 
