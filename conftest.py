@@ -19,6 +19,13 @@ os.environ.setdefault("ADMIN_IDS", "123456789")
 os.environ.setdefault("LLM_ENGINE", "groq")
 os.environ.setdefault("OPENAI_API_KEY", "")
 
+# Image generation (/image) would otherwise require OPENAI_API_KEY to be set
+# at import time (see config/settings.py), which would conflict with the
+# empty OPENAI_API_KEY pinned above for the LLM fallback tests. Tests for
+# services/image_service.py and handlers/image_handler.py exercise their
+# functions directly and don't depend on this flag.
+os.environ.setdefault("IMAGE_GEN_ENABLED", "false")
+
 # Stub out telebot if the package is not installed (e.g. running tests without
 # the full venv). In CI requirements.txt is installed so the real package is used.
 if "telebot" not in sys.modules:

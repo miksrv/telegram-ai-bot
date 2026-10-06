@@ -1,6 +1,8 @@
 from database.db import (
+    get_image_usage_count,
     get_reply_candidate,
     get_user_profile,
+    increment_image_usage,
     increment_message_count,
     mark_message_replied,
     save_message,
@@ -149,3 +151,59 @@ def test_marked_message_is_never_picked_again():
     assert candidate is not None
     mark_message_replied(candidate["id"])
     assert get_reply_candidate(chat_id, min_word_count=6) is None
+
+
+# --------------------------------------------------
+# get_image_usage_count / increment_image_usage
+# --------------------------------------------------
+
+
+# Each test below uses its own user ID and/or a fixed fake "today" (via
+# _today_utc patching) to stay isolated from the others and from reruns
+# against the same on-disk SQLite file (counts are deltas, not absolute
+# zero-based values, since a leftover row from a previous run is possible).
+
+
+def test_image_usage_starts_at_zero_for_a_fresh_user():
+    user = 9_000_201
+    assert get_image_usage_count(user) == 0
+
+
+def test_image_usage_increments():
+    user = 9_000_202
+    before = get_image_usage_count(user)
+    increment_image_usage(user)
+    assert get_image_usage_count(user) == before + 1
+    increment_image_usage(user)
+    increment_image_usage(user)
+    assert get_image_usage_count(user) == before + 3
+
+
+def test_image_usage_is_isolated_by_user():
+    user_a = 9_000_203
+    user_b = 9_000_204
+    before_a = get_image_usage_count(user_a)
+    before_b = get_image_usage_count(user_b)
+    increment_image_usage(user_a)
+    increment_image_usage(user_a)
+    assert get_image_usage_count(user_a) == before_a + 2
+    assert get_image_usage_count(user_b) == before_b
+
+
+def test_image_usage_is_isolated_by_date(monkeypatch):
+    import database.db as db_module
+
+    user = 9_000_205
+    monkeypatch.setattr(db_module, "_today_utc", lambda: "2000-01-01")
+    before_day_one = get_image_usage_count(user)
+    increment_image_usage(user)
+    increment_image_usage(user)
+    assert get_image_usage_count(user) == before_day_one + 2
+
+    monkeypatch.setattr(db_module, "_today_utc", lambda: "2000-01-02")
+    before_day_two = get_image_usage_count(user)
+    # A distinct row per date: switching the fake "today" must not carry over
+    # day one's count, which was just bumped to at least before_day_one + 2.
+    assert before_day_two < before_day_one + 2
+    increment_image_usage(user)
+    assert get_image_usage_count(user) == before_day_two + 1
