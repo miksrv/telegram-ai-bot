@@ -96,6 +96,16 @@ def _init_db():
             ON messages(chat_id, timestamp);
         """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS image_generation_usage (
+                user_id    INTEGER NOT NULL,
+                usage_date TEXT    NOT NULL,
+                count      INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, usage_date)
+            );
+        """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -500,6 +510,46 @@ def ensure_user_profile_exists(
             VALUES (?, ?, ?, ?, ?)
         """,
             (user_id, first_name, last_name, username, int(time.time())),
+        )
+        conn.commit()
+
+
+# ==========================================================
+# IMAGE GENERATION USAGE (/image daily quota)
+# ==========================================================
+
+
+def _today_utc() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def get_image_usage_count(user_id: int) -> int:
+    """Returns today's (UTC) image-generation count for the user, 0 if no row yet."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT count FROM image_generation_usage WHERE user_id = ? AND usage_date = ?",
+            (user_id, _today_utc()),
+        ).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def increment_image_usage(user_id: int) -> None:
+    """Upserts today's (UTC) usage row, incrementing the count by one.
+
+    Only call this after a successful generation — never on failure, so a
+    failed attempt doesn't consume the user's daily quota.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO image_generation_usage(user_id, usage_date, count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(user_id, usage_date) DO UPDATE SET count = count + 1
+            """,
+            (user_id, _today_utc()),
         )
         conn.commit()
 
