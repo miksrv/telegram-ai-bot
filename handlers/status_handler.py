@@ -11,12 +11,16 @@ from queue import Empty
 
 from telebot import TeleBot, types
 
-from config.settings import ADMIN_IDS
+from config.settings import ADMIN_IDS, BOT_VERSION
 from services.mqtt_service import register_request, send_command, unregister_request
 
 MAX_WAIT = 30.0
 
 logger = logging.getLogger(__name__)
+
+# Shown on every /status reply, including failures/timeouts, so the running
+# version is always visible regardless of whether CubeSat answered.
+VERSION_LINE = f"Версия TARS: v{BOT_VERSION}"
 
 
 def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -45,7 +49,7 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     if not send_command({"command": "get_telemetry", "request_id": request_id}, topic="cubesat/command"):
         unregister_request(request_id)
-        bot.send_message(chat_id, "❌ Не удалось отправить запрос телеметрии.")
+        bot.send_message(chat_id, f"❌ Не удалось отправить запрос телеметрии.\n\n{VERSION_LINE}")
         return
 
     def wait_and_respond():
@@ -53,7 +57,9 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             try:
                 msg = q.get(timeout=MAX_WAIT)
             except Empty:
-                bot.send_message(chat_id, "⏰ Таймаут: телеметрия не пришла за 30 секунд. Попробуйте позже.")
+                bot.send_message(
+                    chat_id, f"⏰ Таймаут: телеметрия не пришла за 30 секунд. Попробуйте позже.\n\n{VERSION_LINE}"
+                )
                 return
 
             payload_str = msg["payload"]
@@ -63,10 +69,10 @@ def handle_status(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
                 bot.send_message(chat_id, status_text, parse_mode="Markdown", disable_web_page_preview=True)
             except json.JSONDecodeError:
                 logger.error(f"Невалидный JSON в телеметрии: {payload_str[:200]}...")
-                bot.send_message(chat_id, "Получены данные, но формат некорректный 😕")
+                bot.send_message(chat_id, f"Получены данные, но формат некорректный 😕\n\n{VERSION_LINE}")
             except Exception as e:
                 logger.exception("Ошибка обработки телеметрии")
-                bot.send_message(chat_id, f"Ошибка при обработке ответа: {str(e)}")
+                bot.send_message(chat_id, f"Ошибка при обработке ответа: {str(e)}\n\n{VERSION_LINE}")
         finally:
             unregister_request(request_id)
 
@@ -160,6 +166,7 @@ def format_telemetry_for_telegram(data: dict) -> str:
             lines.append(f" • CPU Temp: {sys['cpu_temperature']} °C")
 
     if len(lines) <= 2:
-        return "Получена телеметрия, но данных для отображения нет 😔"
+        return f"Получена телеметрия, но данных для отображения нет 😔\n\n{VERSION_LINE}"
 
+    lines.append(f"\n{VERSION_LINE}")
     return "\n".join(lines)

@@ -7,8 +7,10 @@ TARS is a Telegram bot for the Russian astronomy community (@astronom_chat), nam
 ## Architecture
 
 ```
+VERSION                           # Running version, MAJOR.MINOR.PATCH (see "Versioning & Releases" below)
+CHANGELOG.md                      # Keep a Changelog history, one entry per release
 main.py                          # Entry point: starts MQTT + bot polling
-config/settings.py               # All configuration, loaded from .env
+config/settings.py               # All configuration, loaded from .env; also reads VERSION into BOT_VERSION
 core/
   brain.py                       # TARSBrain: builds prompts/context, memory/profile updates, post_proactively(); delegates the actual model call to core/llm
   llm/                           # Pluggable cloud LLM engine (see "LLM Engine" section below)
@@ -92,6 +94,7 @@ Gated by its own master toggle, `PROACTIVE_REPLY_ENABLED` (default `true`) — c
 1. `status_handler.handle_status` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "get_telemetry", "request_id": ...}` to `cubesat/command`
 2. Spawns a background daemon thread that waits up to 30s for the matching reply on `cubesat/telemetry/data` (polling thread is **not** blocked)
 3. `format_telemetry_for_telegram` renders Markdown response; the queue is unregistered when done
+4. Every reply — success, a failed send, a malformed payload, or the 30s timeout — ends with a `Версия TARS: v{BOT_VERSION}` footer (`status_handler.VERSION_LINE`), so the running version is visible even when CubeSat never answers
 
 ### Star charts (/sky, /horizon, /skymap, /galaxy)
 Integration with the separate **starmap-service** repo (its `API.md` is the shared, authoritative MQTT contract — do not change it unilaterally).
@@ -240,6 +243,14 @@ The MQTT client (`mqtt_service`) runs `loop_forever` in a background daemon thre
 - Run tests: `pytest tests/ -v`. `conftest.py` sets fake required env vars before import (since `config/settings.py` calls `require_env()` at import time) and stubs `telebot` if not installed.
 - CI (`.github/workflows`) runs, in order: black (`--line-length 120`), isort (`--profile black`), pylint (`fail-under 7.0`, excludes `tests/`), then pytest.
 - Formatting/lint config lives in `pyproject.toml` (black, isort, pylint). Match the 120-char line length.
+
+## Versioning & Releases
+
+- The running version lives in the `VERSION` file at the repo root as plain `MAJOR.MINOR.PATCH` (semver: major = breaking change, minor = new feature, patch = fix). `config/settings.py` reads it once at import time into `BOT_VERSION` (fallback `"unknown"` if the file is missing).
+- `/status` shows the version on every reply (see "CubeSat telemetry (/status)" above), so it's always visible in Telegram without needing shell/log access.
+- When work on a branch is ready for a PR: bump `VERSION` and add a `CHANGELOG.md` entry (Keep a Changelog style) in the same branch, before committing/opening the PR.
+- `CHANGELOG.md` is written in English only, whatever language the task or the bot's user-facing texts are in (quote Russian UI strings only when the exact text matters, e.g. a reply message).
+- After the PR is merged: switch to `main`, pull, tag the merge commit `vX.Y.Z` (annotated tag), push the tag, then publish a GitHub release for that tag at https://github.com/miksrv/telegram-ai-bot/releases — e.g. `gh release create vX.Y.Z --title vX.Y.Z --notes <changelog section>`.
 
 ## Known Issues
 - _None currently tracked._ Two previously documented MQTT issues have been resolved:
