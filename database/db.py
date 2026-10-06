@@ -541,6 +541,10 @@ def increment_image_usage(user_id: int) -> None:
 
     Only call this after a successful generation — never on failure, so a
     failed attempt doesn't consume the user's daily quota.
+
+    Kept around for tests/callers that want an unconditional increment; the
+    handler's actual gating decision goes through try_reserve_image_slot()
+    below, which is atomic against the daily cap.
     """
     with get_connection() as conn:
         conn.execute(
@@ -548,6 +552,56 @@ def increment_image_usage(user_id: int) -> None:
             INSERT INTO image_generation_usage(user_id, usage_date, count)
             VALUES (?, ?, 1)
             ON CONFLICT(user_id, usage_date) DO UPDATE SET count = count + 1
+            """,
+            (user_id, _today_utc()),
+        )
+        conn.commit()
+
+
+def try_reserve_image_slot(user_id: int, max_per_day: int) -> bool:
+    """Atomically checks-and-reserves one of today's (UTC) image-generation slots.
+
+    This replaces a separate "read count, compare, call OpenAI, then write"
+    sequence — which is a check-then-act race across two worker threads — with
+    a single conditional upsert. The UPDATE branch only fires (and increments
+    the stored count) when the existing row is still under max_per_day; SQLite
+    reports whether it fired via cursor.rowcount, and it serializes correctly
+    across connections/threads via its own locking (WAL + busy_timeout, see
+    get_connection()), not a Python-level lock.
+
+    Returns True if a slot was reserved (caller should proceed and call
+    OpenAI), False if the daily cap has already been reached (caller must not
+    call OpenAI and should tell the user the limit is reached).
+    """
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO image_generation_usage(user_id, usage_date, count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(user_id, usage_date) DO UPDATE SET count = count + 1
+            WHERE image_generation_usage.count < ?
+            """,
+            (user_id, _today_utc(), max_per_day),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def release_image_usage(user_id: int) -> None:
+    """Releases a previously reserved slot (decrements today's count by one).
+
+    Call this when a reserved generation ultimately fails (the OpenAI call
+    itself raises), so a failed attempt doesn't cost the user's daily quota.
+    Never call it after a failed delivery (send_photo) following a successful
+    generation — that slot is deliberately left consumed (see image_handler.py).
+    Clamped at 0 so it can never go negative.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE image_generation_usage
+            SET count = MAX(count - 1, 0)
+            WHERE user_id = ? AND usage_date = ?
             """,
             (user_id, _today_utc()),
         )

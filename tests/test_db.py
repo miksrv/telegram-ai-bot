@@ -5,7 +5,9 @@ from database.db import (
     increment_image_usage,
     increment_message_count,
     mark_message_replied,
+    release_image_usage,
     save_message,
+    try_reserve_image_slot,
     update_user_notes,
     update_user_profile,
 )
@@ -207,3 +209,68 @@ def test_image_usage_is_isolated_by_date(monkeypatch):
     assert before_day_two < before_day_one + 2
     increment_image_usage(user)
     assert get_image_usage_count(user) == before_day_two + 1
+
+
+# --------------------------------------------------
+# try_reserve_image_slot / release_image_usage
+# --------------------------------------------------
+
+# Each test below patches _today_utc to a fresh, random one-off token (not a
+# real date — it's only ever used as an opaque DB key) so the (user_id,
+# usage_date) row it touches is guaranteed brand new, both across tests in
+# this run and across reruns against the same on-disk SQLite file. That makes
+# plain zero-based assertions safe here, unlike the fixed-date tests above.
+
+
+def _fresh_fake_today(monkeypatch):
+    import uuid
+
+    import database.db as db_module
+
+    token = f"test-{uuid.uuid4()}"
+    monkeypatch.setattr(db_module, "_today_utc", lambda: token)
+
+
+def test_reserve_slot_succeeds_under_the_cap(monkeypatch):
+    _fresh_fake_today(monkeypatch)
+    user = 9_000_301
+    assert try_reserve_image_slot(user, max_per_day=3) is True
+    assert get_image_usage_count(user) == 1
+    assert try_reserve_image_slot(user, max_per_day=3) is True
+    assert get_image_usage_count(user) == 2
+
+
+def test_reserve_slot_fails_once_cap_is_reached(monkeypatch):
+    """Sequential proof of the atomic SQL condition: once count == max_per_day,
+    a further reservation attempt must not be granted and must not increment
+    the stored count further. This is the boundary case the reviewer asked
+    to be exercised directly, without needing a real multi-threaded race."""
+    _fresh_fake_today(monkeypatch)
+    user = 9_000_302
+    max_per_day = 2
+    assert try_reserve_image_slot(user, max_per_day) is True
+    assert try_reserve_image_slot(user, max_per_day) is True
+    assert get_image_usage_count(user) == max_per_day
+
+    # At the cap: the next call must be rejected and leave the count untouched.
+    assert try_reserve_image_slot(user, max_per_day) is False
+    assert get_image_usage_count(user) == max_per_day
+
+
+def test_release_image_usage_decrements_a_reserved_slot(monkeypatch):
+    _fresh_fake_today(monkeypatch)
+    user = 9_000_303
+    assert try_reserve_image_slot(user, max_per_day=5) is True
+    assert get_image_usage_count(user) == 1
+
+    release_image_usage(user)
+    assert get_image_usage_count(user) == 0
+
+
+def test_release_image_usage_does_not_go_negative(monkeypatch):
+    _fresh_fake_today(monkeypatch)
+    user = 9_000_304
+    assert get_image_usage_count(user) == 0
+
+    release_image_usage(user)  # no row yet / already at zero
+    assert get_image_usage_count(user) == 0

@@ -7,6 +7,7 @@ spam cooldown shared with every other command.
 """
 
 import logging
+import threading
 from io import BytesIO
 
 from telebot import TeleBot, types
@@ -31,8 +32,11 @@ _COOLDOWN_TEXT = "Вы задаете слишком много вопросов
 def handle_image(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     """
     Обрабатывает /image <описание>: генерирует изображение через OpenAI Images API.
-    Ожидание ответа выполняется синхронно внутри typing_action — запрос к OpenAI
-    обычно короче, чем MQTT-команды /photo и /sky, поэтому отдельный поток не нужен.
+
+    Быстрые проверки (чат, промпт, cooldown, атомарное резервирование слота
+    дневного лимита) выполняются синхронно здесь же; сам вызов OpenAI — долгая
+    операция — выполняется в фоновом потоке, как у /photo, чтобы не занимать
+    ограниченный пул воркеров Telegram-диспетчера.
     """
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -50,7 +54,10 @@ def handle_image(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         bot.reply_to(message, _COOLDOWN_TEXT)
         return
 
-    if db.get_image_usage_count(user_id) >= IMAGE_GEN_MAX_PER_DAY:
+    # Atomic check-and-reserve: a single conditional upsert at the DB layer, so
+    # two in-flight /image calls from the same user can't both pass the check
+    # before either increments (see database/db.py's try_reserve_image_slot).
+    if not db.try_reserve_image_slot(user_id, IMAGE_GEN_MAX_PER_DAY):
         bot.reply_to(
             message,
             f"Достигнут дневной лимит генерации изображений ({IMAGE_GEN_MAX_PER_DAY} в сутки). "
@@ -60,29 +67,49 @@ def handle_image(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
 
     working = safe_reply(bot, message, "Генерирую изображение… ⏳")
 
-    try:
-        with typing_action(bot, chat_id):
-            image_bytes = generate_image(prompt)
+    def generate_and_respond():
+        try:
+            with typing_action(bot, chat_id):
+                image_bytes = generate_image(prompt)
+        except ImageContentPolicyError:
+            db.release_image_usage(user_id)
+            safe_delete(bot, chat_id, working)
+            safe_reply(bot, message, "Запрос отклонён модерацией OpenAI — попробуйте переформулировать описание 🙅")
+            return
+        except ImageQuotaExceededError as e:
+            logger.error(f"Image generation quota exceeded: {e}")
+            db.release_image_usage(user_id)
+            safe_delete(bot, chat_id, working)
+            safe_reply(
+                bot, message, "Сервис генерации изображений временно недоступен (исчерпана квота). Попробуйте позже."
+            )
+            return
+        except Exception:
+            logger.exception("Image generation failed")
+            db.release_image_usage(user_id)
+            safe_delete(bot, chat_id, working)
+            safe_reply(bot, message, "Не удалось сгенерировать изображение 😔")
+            return
 
-        # Only consumed on success, so a failed attempt never costs the user's quota.
-        db.increment_image_usage(user_id)
-        safe_delete(bot, chat_id, working)
-        bot.send_photo(
-            chat_id,
-            BytesIO(image_bytes),
-            reply_to_message_id=message.message_id,
-            allow_sending_without_reply=True,
-        )
-    except ImageContentPolicyError:
-        safe_delete(bot, chat_id, working)
-        safe_reply(bot, message, "Запрос отклонён модерацией OpenAI — попробуйте переформулировать описание 🙅")
-    except ImageQuotaExceededError as e:
-        logger.error(f"Image generation quota exceeded: {e}")
-        safe_delete(bot, chat_id, working)
-        safe_reply(
-            bot, message, "Сервис генерации изображений временно недоступен (исчерпана квота). Попробуйте позже."
-        )
-    except Exception:
-        logger.exception("Image generation failed")
-        safe_delete(bot, chat_id, working)
-        safe_reply(bot, message, "Не удалось сгенерировать изображение 😔")
+        # Generation succeeded, so the reserved slot stays consumed from here
+        # on — including if the send below fails. The alternative (releasing
+        # it on a delivery failure) would let a user dodge the quota via a
+        # handler that reliably fails delivery, so this is a deliberate
+        # trade-off, not an oversight.
+        try:
+            safe_delete(bot, chat_id, working)
+            bot.send_photo(
+                chat_id,
+                BytesIO(image_bytes),
+                reply_to_message_id=message.message_id,
+                allow_sending_without_reply=True,
+            )
+        except Exception:
+            logger.exception("Failed to send generated image")
+            safe_reply(
+                bot,
+                message,
+                "Изображение сгенерировано, но не удалось отправить — попытка учтена в дневном лимите 😔",
+            )
+
+    threading.Thread(target=generate_and_respond, daemon=True).start()
