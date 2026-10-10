@@ -57,10 +57,15 @@ def _init_db():
                 avg_verbosity REAL DEFAULT 0.5,
                 interests TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
+                facts TEXT DEFAULT '',
                 last_updated INTEGER
             );
         """
         )
+        # Migration for pre-existing databases created before facts existed.
+        existing_profile_cols = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
+        if "facts" not in existing_profile_cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN facts TEXT DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_memory (
@@ -137,6 +142,26 @@ def _parse_interests(raw: str) -> list:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+# Structured facts the model maintains via the "facts" field of a full-update
+# response. Kept deliberately small; keys outside this set are dropped rather
+# than stored, so a drifting model can't grow the profile unbounded.
+FACTS_ALLOWED_KEYS = {"name", "location", "equipment", "experience", "topics"}
+
+
+def _parse_facts(raw: str) -> Dict[str, Any]:
+    """Decodes the stored structured-facts JSON. Never raises: a missing or
+    malformed value (legacy empty string, corrupt JSON, non-dict) returns {}."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            return value
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return {}
+
+
 def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str, Any]:
     """
     Returns a user profile dictionary.
@@ -151,7 +176,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             """
             SELECT message_count, avg_offtopic, avg_provocation,
                    avg_spam, avg_rudeness, avg_verbosity,
-                   interests, notes, first_name, last_name, username
+                   interests, notes, first_name, last_name, username, facts
             FROM user_profile WHERE user_id=?
                  """,
             (user_id,),
@@ -180,6 +205,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
                 "avg_verbosity": 0.5,
                 "interests": [],
                 "notes": "",
+                "facts": {},
                 "first_name": first_name,
                 "last_name": last_name,
                 "username": username,
@@ -215,6 +241,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "first_name": row[8] or "",
             "last_name": row[9] or "",
             "username": row[10] or "",
+            "facts": _parse_facts(row[11]),
         }
     finally:
         conn.close()
@@ -326,6 +353,71 @@ def update_user_notes(user_id: int, new_info: str):
         conn.commit()
 
 
+def update_user_facts(user_id: int, facts_update: Dict[str, Any]) -> None:
+    """
+    Merges `facts_update` into the user's stored structured facts (JSON text).
+
+    The model is asked to send only new/changed keys each turn (see the
+    "facts" field of the full-update JSON contract), so this always merges
+    rather than replaces: a key not present in `facts_update` keeps its
+    previously stored value. A null/empty value (None, "", [], {}) for a key
+    deletes it instead of storing an empty placeholder. Keys outside
+    FACTS_ALLOWED_KEYS are silently dropped — defensive against model drift,
+    mirrors how update_user_profile ignores a non-list interests value.
+    """
+    profile = get_user_profile(user_id)
+    facts = dict(profile.get("facts") or {})
+
+    for key, value in facts_update.items():
+        if key not in FACTS_ALLOWED_KEYS:
+            continue
+        if value in (None, "", [], {}):
+            facts.pop(key, None)
+        elif isinstance(value, (str, int, float, list)):
+            facts[key] = value
+        else:
+            logging.warning(f"Ignoring facts[{key}] of unexpected type for user {user_id}: {value!r}")
+
+    facts_str = json.dumps(facts, ensure_ascii=False)
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_profile SET facts=?, last_updated=? WHERE user_id=?",
+            (facts_str, int(time.time()), user_id),
+        )
+        conn.commit()
+
+
+def get_display_names(user_ids) -> Dict[int, str]:
+    """
+    Batched lookup of display names for a set of user IDs — one query instead
+    of N per-turn lookups — used to label conversation history with real names
+    (first_name, falling back to "@username") instead of "User#<id>".
+
+    IDs with no stored profile are simply absent from the result; callers fall
+    back to "User#<id>" themselves.
+    """
+    ids = [uid for uid in set(user_ids) if uid]
+    if not ids:
+        return {}
+
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT user_id, first_name, username FROM user_profile WHERE user_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+        names: Dict[int, str] = {}
+        for uid, first_name, username in rows:
+            first_name = (first_name or "").strip()
+            username = (username or "").strip()
+            names[uid] = first_name or (f"@{username}" if username else f"User#{uid}")
+        return names
+    finally:
+        conn.close()
+
+
 # ==========================================================
 # MEMORY PERSISTENCE
 # ==========================================================
@@ -423,6 +515,33 @@ def get_recent_messages(chat_id: int, limit: int) -> list:
             (chat_id, limit),
         ).fetchall()
         return [{"first_name": r[0], "username": r[1], "text": r[2]} for r in reversed(rows)]
+    finally:
+        conn.close()
+
+
+def get_recent_user_messages(chat_id: int, user_id: int, limit: int) -> list:
+    """
+    Returns up to `limit` most recent messages from a single user in a chat,
+    ordered oldest-first — a DB supplement for the per-user "earlier messages"
+    background block when the in-RAM memory deque doesn't hold enough of this
+    user's own turns. Only populated for chats observed via PROACTIVE_CHAT_IDS
+    (see the observe block in handlers/message_handler.py).
+    """
+    if limit <= 0:
+        return []
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT text
+            FROM messages
+            WHERE chat_id = ? AND user_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """,
+            (chat_id, user_id, limit),
+        ).fetchall()
+        return [r[0] for r in reversed(rows)]
     finally:
         conn.close()
 

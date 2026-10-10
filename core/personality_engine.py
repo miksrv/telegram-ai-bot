@@ -93,6 +93,34 @@ class PersonalityEngine:
         ]
         return rules[level]
 
+    # Message-count thresholds for the familiarity rule below. Deliberately not
+    # settings — this is cheap internal shaping, not something the owner needs
+    # to tune per deployment.
+    NEWCOMER_THRESHOLD = 3
+    REGULAR_THRESHOLD = 20
+
+    @staticmethod
+    def familiarity_rule(message_count: int) -> str:
+        """One-line directive derived from how many turns this user has had with
+        TARS — a newcomer gets a bit more context, a regular is addressed
+        naturally without re-introducing itself. Empty in the middle band."""
+        if message_count < PersonalityEngine.NEWCOMER_THRESHOLD:
+            return "Newcomer: be slightly more welcoming and explanatory, assume no prior context."
+        if message_count >= PersonalityEngine.REGULAR_THRESHOLD:
+            return "Regular: address them by name/known facts naturally; skip re-introductions."
+        return ""
+
+    @staticmethod
+    def depth_rule(experience: str) -> str:
+        """One-line directive from the user's self-reported experience level
+        (the "experience" structured fact). Empty when unset or unrecognized."""
+        rules = {
+            "beginner": "Explain basics plainly; avoid unexplained jargon.",
+            "advanced": "Assume a strong background; skip basic explanations.",
+            "pro": "Peer-level technical depth; no hand-holding.",
+        }
+        return rules.get((experience or "").strip().lower(), "")
+
     # ----------------------------
     # PUBLIC ENTRYPOINT
     # ----------------------------
@@ -115,6 +143,14 @@ class PersonalityEngine:
             rule = fn(level)
             if rule:
                 rules.append(rule)
+
+        familiarity = cls.familiarity_rule(profile.get("message_count", 0))
+        if familiarity:
+            rules.append(familiarity)
+
+        depth = cls.depth_rule((profile.get("facts") or {}).get("experience", ""))
+        if depth:
+            rules.append(depth)
 
         if not rules:
             return ""

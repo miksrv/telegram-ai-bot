@@ -1,7 +1,12 @@
 """
 Centralized storage for all TARS prompts.
-No logic — only text generation.
+No logic beyond assembling text — build_capabilities_line() is the only part
+that reads live state (IMAGE_GEN_ENABLED, starmap online status), kept here
+rather than in brain.py so capability wording lives in exactly one place.
 """
+
+from config.settings import IMAGE_GEN_ENABLED
+from services.mqtt_service import is_starmap_online
 
 # ==========================================================
 # BASE PROMPTS
@@ -59,7 +64,8 @@ GENERAL_JSON_SCHEMA = """{{
     "verbosity": 0..1,
     "interests": ["list of user interests relevant to this message"]
   }},
-  "notes": "<updated rolling summary of the user: carry over durable facts from the previous notes, revise only what changed>"
+  "notes": "<short rolling summary of communication style/behavioral hints, revise only what changed>",
+  "facts": {{"name": "...", "location": "...", "equipment": "...", "experience": "beginner|amateur|advanced|pro", "topics": ["..."]}}
 }}"""
 
 REPLY_ONLY_JSON_SCHEMA = """{{
@@ -81,34 +87,89 @@ HONESTY_RULES = """Honesty rules (honesty setting: 90%):
 - Assess claims independently rather than agreeing simply because the user stated them; hold correct positions under pushback without capitulating.
 - Never open a response with agreement or validation phrases — state your position directly."""
 
-STYLE_MATCH_RULE = (
-    "Match the user's communication style as captured in the profile notes "
-    "(ты/вы formality, typical message length, technical depth), without sacrificing accuracy."
+# Self-identity + personalization: terse, shared by both templates (and, for
+# self-identity, by the proactive templates below) rather than duplicated.
+# PERSONALIZATION_RULE also subsumes the old standalone style-matching line —
+# matching style is one facet of using the user card, not a separate rule.
+SELF_IDENTITY_RULE = (
+    'Self-identity: "ТАРС"/"TARS"/"Тарс*" in any case or diminutive means you — '
+    "third-person talk about Tars is about you, not another participant."
 )
 
-GENERAL_INSTRUCTIONS = f"""Instructions for TARS:
+PERSONALIZATION_RULE = (
+    "Personalization: use the user card below (name, facts, notes, earlier messages) to match their "
+    "style (ты/вы, length, depth); address them by name occasionally, not every reply; never recite the profile."
+)
+
+PERSONALIZATION_BLOCK = "\n\n".join([SELF_IDENTITY_RULE, PERSONALIZATION_RULE])
+
+GENERAL_INSTRUCTIONS = """Instructions for TARS:
 - "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. Subtle dry humor or light irony is welcome — never excessive, sarcastic, or flattering.
 - "profile_update" should contain numeric tendencies and relevant interests extracted from this message.
-- "notes" is your long-term memory of the user: name, key interests, expertise level, communication style (ты/вы formality, typical message length, emoji use, technical depth), behavioral hints, preferences, and durable facts (equipment, location, recurring topics). Treat the previous notes as the base — preserve durable facts even if unrelated to the current message, update or add only what changed, and drop a detail only when it is clearly obsolete or wrong. Keep it a few sentences: a rolling summary, not a transcript — never repeat conversation history.
-- {STYLE_MATCH_RULE}"""
+- "notes" is a short rolling summary of communication style and behavioral hints (ты/вы formality, message length, emoji use, preferences). Update only what changed; a few sentences, never a transcript.
+- "facts" carries only keys that are new or changed this turn; omit unchanged keys; send null/empty to remove one."""
 
-REPLY_ONLY_INSTRUCTIONS = f"""Instructions for TARS:
-- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. Subtle dry humor or light irony is welcome — never excessive, sarcastic, or flattering.
-- {STYLE_MATCH_RULE}"""
+REPLY_ONLY_INSTRUCTIONS = (
+    "Instructions for TARS:\n"
+    '- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. '
+    "Subtle dry humor or light irony is welcome — never excessive, sarcastic, or flattering."
+)
 
-CONTEXT_TAIL_TEMPLATE = """Adaptive behavior directives generated from user interaction history:
+CONTEXT_TAIL_TEMPLATE = """{capabilities}
+
+Adaptive behavior directives generated from user interaction history:
 {user_profile_summary}
 
 Telegram user identity:
 {identity}"""
 
 GENERAL_SYSTEM_TEMPLATE = "\n\n".join(
-    [ROLE_INTRO, GENERAL_JSON_SCHEMA, RESPONSE_RULES, HONESTY_RULES, GENERAL_INSTRUCTIONS, CONTEXT_TAIL_TEMPLATE]
+    [
+        ROLE_INTRO,
+        GENERAL_JSON_SCHEMA,
+        RESPONSE_RULES,
+        HONESTY_RULES,
+        PERSONALIZATION_BLOCK,
+        GENERAL_INSTRUCTIONS,
+        CONTEXT_TAIL_TEMPLATE,
+    ]
 )
 
 REPLY_ONLY_SYSTEM_TEMPLATE = "\n\n".join(
-    [ROLE_INTRO, REPLY_ONLY_JSON_SCHEMA, RESPONSE_RULES, HONESTY_RULES, REPLY_ONLY_INSTRUCTIONS, CONTEXT_TAIL_TEMPLATE]
+    [
+        ROLE_INTRO,
+        REPLY_ONLY_JSON_SCHEMA,
+        RESPONSE_RULES,
+        HONESTY_RULES,
+        PERSONALIZATION_BLOCK,
+        REPLY_ONLY_INSTRUCTIONS,
+        CONTEXT_TAIL_TEMPLATE,
+    ]
 )
+
+
+# ==========================================================
+# CAPABILITIES LINE (dynamic — built per call, not hard-coded per template)
+# ==========================================================
+
+
+def build_capabilities_line() -> str:
+    """Builds the terse capabilities block: whether /image is available (and that
+    a reply can never carry an attachment), plus the other commands currently
+    usable. Star chart commands are only listed while starmap-service is online,
+    so the bot never advertises a command that would just fail. 1-3 short lines.
+    """
+    if IMAGE_GEN_ENABLED:
+        image_line = "you cannot attach images in a reply; to generate one the user sends /image <description>."
+    else:
+        image_line = "you cannot attach or generate images."
+
+    commands = []
+    if is_starmap_online():
+        commands += ["/sky", "/horizon", "/skymap", "/galaxy"]
+    commands += ["/weather", "/status", "/photo", "/help"]
+
+    return "Capabilities: " + image_line + "\n" + "Other commands available to users: " + ", ".join(commands) + "."
 
 
 # ==========================================================
@@ -123,6 +184,7 @@ def build_general_system_prompt(identity: str, profile_summary: str) -> str:
     return GENERAL_SYSTEM_TEMPLATE.format(
         identity=identity,
         user_profile_summary=profile_summary,
+        capabilities=build_capabilities_line(),
     )
 
 
@@ -131,6 +193,7 @@ def build_reply_only_system_prompt(identity: str, profile_summary: str) -> str:
     return REPLY_ONLY_SYSTEM_TEMPLATE.format(
         identity=identity,
         user_profile_summary=profile_summary,
+        capabilities=build_capabilities_line(),
     )
 
 
@@ -159,6 +222,7 @@ You must output **valid JSON only** with this exact structure:
 
 Rules:
 - Write in Russian.
+- {self_identity}
 - Do not address any specific user by name. Speak to the chat as a whole.
 - The message should feel like a natural interjection: a curiosity, a provocation,
   a wry observation, or an open question — not a reply to any single person.
@@ -187,6 +251,7 @@ def build_proactive_prompt(context_lines: list, utc_time: str) -> str:
         context="\n".join(context_lines),
         context_size=len(context_lines),
         utc_time=utc_time,
+        self_identity=SELF_IDENTITY_RULE,
     )
 
 
@@ -207,6 +272,7 @@ You must output **valid JSON only** with this exact structure:
 
 Rules:
 - Write in Russian.
+- {self_identity}
 - React specifically to the content of the target message below — do not produce
   a generic remark that could apply to any message.
 - Maintain the TARS character: dry, precise, slightly ironic, technically minded.
@@ -242,4 +308,5 @@ def build_proactive_reply_prompt(
         target_author=target_author,
         target_text=target_text,
         utc_time=utc_time,
+        self_identity=SELF_IDENTITY_RULE,
     )

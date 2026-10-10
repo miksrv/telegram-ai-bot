@@ -1,5 +1,7 @@
 from database.db import (
+    get_display_names,
     get_image_usage_count,
+    get_recent_user_messages,
     get_reply_candidate,
     get_user_profile,
     increment_image_usage,
@@ -8,6 +10,7 @@ from database.db import (
     release_image_usage,
     save_message,
     try_reserve_image_slot,
+    update_user_facts,
     update_user_notes,
     update_user_profile,
 )
@@ -46,11 +49,18 @@ def test_profile_has_expected_keys():
         "avg_verbosity",
         "interests",
         "notes",
+        "facts",
         "first_name",
         "last_name",
         "username",
     }
     assert expected.issubset(profile.keys())
+
+
+def test_fresh_profile_has_empty_facts():
+    user = 9_000_401
+    profile = get_user_profile(user, _IDENTITY)
+    assert profile["facts"] == {}
 
 
 # --------------------------------------------------
@@ -274,3 +284,163 @@ def test_release_image_usage_does_not_go_negative(monkeypatch):
 
     release_image_usage(user)  # no row yet / already at zero
     assert get_image_usage_count(user) == 0
+
+
+# --------------------------------------------------
+# update_user_facts — structured facts merge/validation (option C)
+# --------------------------------------------------
+
+
+def test_update_user_facts_stores_new_keys():
+    user = 9_000_501
+    get_user_profile(user, _IDENTITY)
+    update_user_facts(user, {"name": "Иван", "experience": "beginner"})
+    facts = get_user_profile(user)["facts"]
+    assert facts == {"name": "Иван", "experience": "beginner"}
+
+
+def test_update_user_facts_merges_without_losing_unrelated_keys():
+    user = 9_000_502
+    get_user_profile(user, _IDENTITY)
+    update_user_facts(user, {"name": "Иван", "location": "Москва"})
+    update_user_facts(user, {"experience": "advanced"})
+    facts = get_user_profile(user)["facts"]
+    assert facts == {"name": "Иван", "location": "Москва", "experience": "advanced"}
+
+
+def test_update_user_facts_null_value_deletes_key():
+    user = 9_000_503
+    get_user_profile(user, _IDENTITY)
+    update_user_facts(user, {"name": "Иван", "location": "Москва"})
+    update_user_facts(user, {"location": None})
+    facts = get_user_profile(user)["facts"]
+    assert facts == {"name": "Иван"}
+
+
+def test_update_user_facts_ignores_unknown_keys():
+    user = 9_000_504
+    get_user_profile(user, _IDENTITY)
+    update_user_facts(user, {"name": "Иван", "unexpected_key": "junk"})
+    facts = get_user_profile(user)["facts"]
+    assert facts == {"name": "Иван"}
+    assert "unexpected_key" not in facts
+
+
+def test_update_user_facts_ignores_bad_value_type():
+    user = 9_000_505
+    get_user_profile(user, _IDENTITY)
+    update_user_facts(user, {"name": {"nested": "dict"}})
+    facts = get_user_profile(user)["facts"]
+    assert facts == {}
+
+
+# --------------------------------------------------
+# get_display_names — batched lookup for conversation-history labeling
+# --------------------------------------------------
+
+
+def test_get_display_names_prefers_first_name():
+    user = 9_000_601
+    get_user_profile(user, {"first_name": "Иван", "last_name": "", "username": "ivan"})
+    names = get_display_names([user])
+    assert names[user] == "Иван"
+
+
+def test_get_display_names_falls_back_to_username():
+    user = 9_000_602
+    get_user_profile(user, {"first_name": "", "last_name": "", "username": "nick"})
+    names = get_display_names([user])
+    assert names[user] == "@nick"
+
+
+def test_get_display_names_unknown_user_absent_from_result():
+    names = get_display_names([9_999_999_999])
+    assert 9_999_999_999 not in names
+
+
+def test_get_display_names_empty_input_returns_empty_dict():
+    assert get_display_names([]) == {}
+
+
+# --------------------------------------------------
+# get_recent_user_messages — DB supplement for the per-user earlier-messages
+# background block
+# --------------------------------------------------
+
+
+def _unique_chat_id() -> int:
+    """A chat_id guaranteed not to collide with a previous run's leftover rows
+    in the on-disk SQLite file (unlike a fixed constant, see the image-usage
+    tests above for the same concern with usage_date)."""
+    import uuid
+
+    return -(uuid.uuid4().int % 1_000_000_000)
+
+
+def test_get_recent_user_messages_filters_by_user_and_orders_oldest_first():
+    chat_id = _unique_chat_id()
+    user_a, user_b = 9_000_611, 9_000_612
+    save_message(chat_id, user_a, 1, "A", "a", "первое сообщение")
+    save_message(chat_id, user_b, 2, "B", "b", "чужое сообщение")
+    save_message(chat_id, user_a, 3, "A", "a", "второе сообщение")
+
+    messages = get_recent_user_messages(chat_id, user_a, limit=5)
+    assert messages == ["первое сообщение", "второе сообщение"]
+
+
+def test_get_recent_user_messages_respects_limit():
+    chat_id = _unique_chat_id()
+    user = 9_000_613
+    for i in range(5):
+        save_message(chat_id, user, i, "A", "a", f"сообщение {i}")
+
+    messages = get_recent_user_messages(chat_id, user, limit=2)
+    assert len(messages) == 2
+    assert messages == ["сообщение 3", "сообщение 4"]
+
+
+# --------------------------------------------------
+# Migration idempotency — the "facts" column on pre-existing databases
+# --------------------------------------------------
+
+
+def test_facts_column_migration_is_idempotent(tmp_path, monkeypatch):
+    """A DB created before the "facts" column existed must gain it on the next
+    startup, and running the migration twice must not raise."""
+    import sqlite3
+
+    import database.db as db_module
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE user_profile (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT DEFAULT '',
+            last_name TEXT DEFAULT '',
+            username TEXT DEFAULT '',
+            message_count INTEGER DEFAULT 0,
+            avg_offtopic REAL DEFAULT 0.0,
+            avg_provocation REAL DEFAULT 0.0,
+            avg_spam REAL DEFAULT 0.0,
+            avg_rudeness REAL DEFAULT 0.0,
+            avg_verbosity REAL DEFAULT 0.5,
+            interests TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            last_updated INTEGER
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(db_module, "DB_PATH", str(db_path))
+
+    db_module._init_db()
+    db_module._init_db()  # second run must be a no-op, not raise
+
+    conn = sqlite3.connect(str(db_path))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
+    conn.close()
+    assert "facts" in cols

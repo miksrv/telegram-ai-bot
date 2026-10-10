@@ -1,4 +1,6 @@
+import core.prompts as prompts_mod
 from core.prompts import (
+    build_capabilities_line,
     build_general_system_prompt,
     build_proactive_prompt,
     build_proactive_reply_prompt,
@@ -98,3 +100,85 @@ def test_proactive_reply_prompt_contains_utc_time():
     utc = "2024-06-15 09:30 UTC"
     result = build_proactive_reply_prompt(["User: test"], "User", "test target", utc)
     assert utc in result
+
+
+# --------------------------------------------------
+# Self-identity / personalization — shared across conversational templates
+# --------------------------------------------------
+
+
+def test_general_system_prompt_contains_self_identity():
+    result = build_general_system_prompt(IDENTITY, PROFILE)
+    assert "ТАРС" in result and "TARS" in result
+    assert "third-person" in result.lower()
+
+
+def test_reply_only_system_prompt_contains_self_identity():
+    result = build_reply_only_system_prompt(IDENTITY, PROFILE)
+    assert "ТАРС" in result and "TARS" in result
+
+
+def test_general_system_prompt_contains_personalization_rule():
+    result = build_general_system_prompt(IDENTITY, PROFILE)
+    assert "personalization" in result.lower()
+
+
+def test_proactive_prompt_contains_self_identity():
+    result = build_proactive_prompt(["User: test"], "2024-01-01 12:00 UTC")
+    assert "ТАРС" in result and "TARS" in result
+
+
+def test_proactive_reply_prompt_contains_self_identity():
+    result = build_proactive_reply_prompt(["User: test"], "User", "test target", "2024-01-01 12:00 UTC")
+    assert "ТАРС" in result and "TARS" in result
+
+
+# --------------------------------------------------
+# build_capabilities_line — dynamic, toggled by IMAGE_GEN_ENABLED and
+# starmap-service availability
+# --------------------------------------------------
+
+
+def test_capabilities_line_mentions_image_command_when_enabled(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", True)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: False)
+    result = build_capabilities_line()
+    assert "/image" in result
+
+
+def test_capabilities_line_omits_image_command_when_disabled(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", False)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: False)
+    result = build_capabilities_line()
+    assert "/image" not in result
+    assert "cannot" in result.lower()
+
+
+def test_capabilities_line_includes_starmap_commands_when_online(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", False)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: True)
+    result = build_capabilities_line()
+    assert "/sky" in result
+    assert "/galaxy" in result
+
+
+def test_capabilities_line_excludes_starmap_commands_when_offline(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", False)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: False)
+    result = build_capabilities_line()
+    assert "/sky" not in result
+
+
+def test_capabilities_line_always_lists_core_commands(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", False)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: False)
+    result = build_capabilities_line()
+    for cmd in ("/weather", "/status", "/photo", "/help"):
+        assert cmd in result
+
+
+def test_general_system_prompt_includes_capabilities(monkeypatch):
+    monkeypatch.setattr(prompts_mod, "IMAGE_GEN_ENABLED", True)
+    monkeypatch.setattr(prompts_mod, "is_starmap_online", lambda: False)
+    result = build_general_system_prompt(IDENTITY, PROFILE)
+    assert "/image" in result
