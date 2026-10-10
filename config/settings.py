@@ -91,6 +91,19 @@ MEMORY_TTL_SECONDS = 3600 * 24
 # moving average (0..1). Higher = more reactive to recent behavior.
 PROFILE_EMA_ALPHA = float(os.getenv("PROFILE_EMA_ALPHA", "0.3"))
 
+# --------------------------------------------------
+# Personalization
+# --------------------------------------------------
+# How often (in bot responses) the full profile_update/notes/facts turn runs,
+# in addition to always on the first message (message_count == 0).
+PROFILE_FULL_UPDATE_INTERVAL = int(os.getenv("PROFILE_FULL_UPDATE_INTERVAL", "3"))
+
+# Up to how many of the current user's own earlier messages (outside the
+# rolling MAX_CONTEXT_MESSAGES window) are surfaced as a background block in
+# the system prompt. Kept small and char-truncated for token economy.
+PERSONALIZATION_EARLIER_MESSAGES_COUNT = int(os.getenv("PERSONALIZATION_EARLIER_MESSAGES_COUNT", "3"))
+PERSONALIZATION_EARLIER_MESSAGE_CHARS = int(os.getenv("PERSONALIZATION_EARLIER_MESSAGE_CHARS", "150"))
+
 # --------------------------------------------
 # Additional rate limit parameters
 # (can be moved to settings later)

@@ -18,9 +18,9 @@ core/
     base.py                      # LLMProvider interface + shared HTTP session/retry helper
     groq_provider.py              # GroqProvider(LLMProvider)
     openai_provider.py            # OpenAIProvider(LLMProvider)
-  memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot helpers
-  prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE)
-  personality_engine.py          # Per-user adaptive behavior rules (0–1 scores → directives)
+  memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot/get_user_earlier_messages helpers
+  prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
+  personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
   proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the once-daily direct reply
 database/
@@ -70,10 +70,12 @@ Only the API key for the active engine is validated at startup (`config/settings
 ### Conversational message
 1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check. When the message is a reply to the bot, the replied-to text is captured and passed to `brain.think` as `reply_to_text`
 2. The `brain.think`/`analyze_image` call runs inside a `utils.typing_action.typing_action(bot, chat_id)` context manager, which sends Telegram's "typing" chat action immediately and re-sends it every ~4s from a background thread for as long as the block runs (Telegram clears the indicator after ~5s otherwise) — it stops the moment the call returns, before the reply is sent. `handlers/weather_handler.py` uses the same helper around its (much shorter) weather API call
-3. `brain.think` → fetches chat history + user profile → builds messages[] array (system prompt + alternating user/assistant turns) → the active LLM engine (`core/llm`, see above). If `reply_to_text` is set and isn't already the latest assistant turn, it is injected as the immediately preceding assistant turn so the model answers the exact message being replied to (handles replies to proactive posts / messages evicted from the rolling memory window)
-4. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes}` on the first message and every 5th (`message_count % 5 == 0`)
-5. `db_increment_message_count` always runs; profile averages and notes only updated on designated turns — both happen inside the `typing_action` block, before it exits
+3. `brain.think` → `_build_user_context` fetches chat history + user profile, plus one batched `database.db.get_display_names()` lookup for every distinct user_id in the window (one query, not N) so history turns are labeled with a real name (first_name, falling back to `@username`, then `User#<id>`) instead of always `User#<id>`. It also builds a terse "earlier messages from this user" background block — up to `PERSONALIZATION_EARLIER_MESSAGES_COUNT` of this user's own messages that fell out of the rolling window (from `memory.get_user_earlier_messages`, with `database.db.get_recent_user_messages` as a DB supplement when memory doesn't hold enough), each truncated to `PERSONALIZATION_EARLIER_MESSAGE_CHARS` and deduped against the current window — then builds messages[] array (system prompt + alternating user/assistant turns) → the active LLM engine (`core/llm`, see above). If `reply_to_text` is set and isn't already the latest assistant turn, it is injected as the immediately preceding assistant turn so the model answers the exact message being replied to (handles replies to proactive posts / messages evicted from the rolling memory window)
+4. LLM returns JSON `{reply}` on most turns, or `{reply, profile_update, notes, facts}` on the first message and every `PROFILE_FULL_UPDATE_INTERVAL`-th turn thereafter (default every 3rd, `message_count % PROFILE_FULL_UPDATE_INTERVAL == 0`)
+5. `db_increment_message_count` always runs; profile averages, notes, and structured facts only updated on designated turns — both happen inside the `typing_action` block, before it exits
 6. `bot.reply_to` sends response, after the typing heartbeat has already stopped
+
+Both conversational system-prompt templates (and, cheaply, the two proactive templates) also carry a fixed self-identity line ("ТАРС"/"TARS"/"Тарс*" in any case/diminutive means the bot, including third-person mentions) and a personalization line (use the user card, address by name occasionally, never recite the profile). `core.prompts.build_capabilities_line()` builds a dynamic 1-3 line capabilities block per call: whether `/image` is available (`IMAGE_GEN_ENABLED`) and the other commands currently usable, including the four star-chart commands only while `services.mqtt_service.is_starmap_online()` is true — so the bot never advertises a command that would just fail.
 
 ### Proactive posting (background)
 1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
@@ -158,6 +160,9 @@ IMAGE_GEN_ENABLED=          # Master toggle for the /image command (default: tru
 IMAGE_GEN_MODEL=            # OpenAI image generation model (default: gpt-image-2.5-sunburst)
 IMAGE_GEN_MAX_PER_DAY=      # Per-user daily /image quota, persisted in SQLite (default: 5)
 IMAGE_GEN_SIZE=             # Output image size passed to the Images API (default: 1024x1024)
+PROFILE_FULL_UPDATE_INTERVAL=              # How often (in bot responses), plus always on message 0, the full profile_update/notes/facts turn runs (default: 3)
+PERSONALIZATION_EARLIER_MESSAGES_COUNT=    # Max earlier messages from the current user surfaced as background context (default: 3)
+PERSONALIZATION_EARLIER_MESSAGE_CHARS=     # Char cap per earlier-message snippet above (default: 150)
 ```
 
 `PROACTIVE_CHAT_IDS` is intersected with `ALLOWED_CHAT_IDS` at load time; IDs outside the allowed set are dropped with a warning.
@@ -173,7 +178,7 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 
 ## LLM Response Contracts
 
-**Conversational path — full update** (`brain.think`, `brain.analyze_image`): used on the first message from a user and every 5th interaction (`message_count % 5 == 0`):
+**Conversational path — full update** (`brain.think`, `brain.analyze_image`): used on the first message from a user and every `PROFILE_FULL_UPDATE_INTERVAL`-th interaction thereafter (default every 3rd, `message_count % PROFILE_FULL_UPDATE_INTERVAL == 0`):
 ```json
 {
   "reply": "Text response in Russian",
@@ -185,9 +190,17 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
     "verbosity": 0.5,
     "interests": ["astronomy", "astrophotography"]
   },
-  "notes": "Short user summary replacing previous value"
+  "notes": "Short rolling summary of communication style/behavioral hints",
+  "facts": {
+    "name": "How the user likes to be addressed",
+    "location": "...",
+    "equipment": "...",
+    "experience": "beginner|amateur|advanced|pro",
+    "topics": ["recurring topics"]
+  }
 }
 ```
+`facts` carries only keys that are new or changed this turn — the code merges them into the stored facts (`database.db.update_user_facts`), and a `null`/empty value deletes that key. Keys outside the fixed small set above are dropped defensively, same spirit as `_apply_profile_update`'s handling of `profile_update`/`notes`.
 
 **Conversational path — reply only**: used on all other turns to reduce output tokens:
 ```json
@@ -207,9 +220,11 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 
 - Stored in SQLite (`data/tars_user_profiles.db`)
 - `message_count` increments on every bot response (via `increment_message_count()`), independent of profile updates
-- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via an exponential moving average (`avg = alpha * sample + (1 - alpha) * avg`, `PROFILE_EMA_ALPHA`, default `0.3`) only on full-update turns (first message + every 5th). EMA (not a cumulative average) is deliberate: since updates only land on a fraction of turns, a cumulative average keyed on `message_count` would shrink each new sample's weight too fast and freeze the profile
-- `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt
-- `notes` is an LLM-maintained free-text summary of the user, fully replaced each time it runs
+- Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via an exponential moving average (`avg = alpha * sample + (1 - alpha) * avg`, `PROFILE_EMA_ALPHA`, default `0.3`) only on full-update turns (first message + every `PROFILE_FULL_UPDATE_INTERVAL`-th, default every 3rd). EMA (not a cumulative average) is deliberate: since updates only land on a fraction of turns, a cumulative average keyed on `message_count` would shrink each new sample's weight too fast and freeze the profile
+- `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt, plus two cheap positive rules: `familiarity_rule(message_count)` (newcomer below `NEWCOMER_THRESHOLD` → slightly more explanatory/welcoming; regular at/above `REGULAR_THRESHOLD` → address by name/known facts, skip re-introductions) and `depth_rule(experience)` (from the `experience` structured fact: beginner/advanced/pro each get one terse depth directive, `amateur`/unset get none)
+- `notes` is an LLM-maintained short free-text summary of communication style and behavioral hints, fully replaced each time it runs; durable structured facts live separately in `facts` (JSON column, see "LLM Response Contracts" above) — a small fixed set of keys (`name`, `location`, `equipment`, `experience`, `topics`) merged incrementally via `database.db.update_user_facts()`, rendered compactly into the system prompt's user card (`key: value; ...`, empty values omitted)
+- Conversation history turns are labeled with the speaker's real name (`database.db.get_display_names()`, one batched query per turn for every distinct user_id in the window) instead of `User#<id>`, falling back to `@username` then `User#<id>` when no profile row/first_name exists
+- A small, char-truncated "earlier messages from this user" background block (`PERSONALIZATION_EARLIER_MESSAGES_COUNT`, `PERSONALIZATION_EARLIER_MESSAGE_CHARS`) surfaces this user's own messages that fell out of the rolling context window, sourced from the in-RAM memory deque first and `database.db.get_recent_user_messages()` as an optional supplement — injected into the system prompt's user card, never into messages[], and clearly labeled as background so it doesn't derail the live conversation
 
 ## Image Generation Quota
 

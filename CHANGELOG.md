@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-10
+
+### Added
+
+- Conversation history now labels turns with the speaker's real name (first
+  name, falling back to `@username`, then `User#<id>`) via one batched DB
+  lookup per turn instead of always showing `User#<id>`.
+- A small, char-truncated background block of the current user's own earlier
+  messages (outside the rolling context window) is injected into the system
+  prompt's user card, clearly labeled as background so it never derails the
+  live conversation (`PERSONALIZATION_EARLIER_MESSAGES_COUNT`,
+  `PERSONALIZATION_EARLIER_MESSAGE_CHARS`).
+- Structured user facts (`name`, `location`, `equipment`, `experience`,
+  `topics`) maintained by the model via a new `facts` field on the full-update
+  JSON contract, merged incrementally into a new `user_profile.facts` column
+  (idempotent migration) and rendered compactly into the user card.
+- `PersonalityEngine` gained two cheap positive directives: a familiarity rule
+  from `message_count` (newcomer vs. regular) and a depth rule from the
+  `experience` fact (beginner/advanced/pro).
+- The full profile-update turn now runs every `PROFILE_FULL_UPDATE_INTERVAL`
+  messages (default every 3rd, was every 5th), configurable via `.env`.
+- System prompt: a terse self-identity line ("ТАРС"/"TARS"/"Тарс*" in any case
+  or diminutive, including third-person mentions, refers to the bot) and a
+  personalization line (use the user card, address by name occasionally,
+  never recite the profile), shared by all conversational templates and
+  cheaply by the proactive ones. A new dynamic capabilities block
+  (`core.prompts.build_capabilities_line()`) states that image replies aren't
+  possible and that `/image <description>` is the way to generate one (only
+  when `IMAGE_GEN_ENABLED`), plus the other commands currently usable
+  (star-chart commands only while starmap-service is online).
+
 ## [1.0.0] - 2026-10-06
 
 First official release of TARS. The bot today:
@@ -41,4 +72,5 @@ First official release of TARS. The bot today:
   warning), `profile_update` is validated as a dict, and both optional side
   effects can no longer turn a valid reply into a failure.
 
+[1.1.0]: https://github.com/miksrv/telegram-ai-bot/releases/tag/v1.1.0
 [1.0.0]: https://github.com/miksrv/telegram-ai-bot/releases/tag/v1.0.0

@@ -108,6 +108,26 @@ class MemoryManager:
             store["last_access"] = time.time()
             store["history"].append((0, "assistant", text))
 
+    def get_user_earlier_messages(self, chat_id: int, user_id: int, limit: int) -> list:
+        """Returns up to `limit` of this user's own user-turn texts from the chat's
+        full in-RAM history (up to MEMORY_LIMIT entries), excluding the most recent
+        MAX_CONTEXT_MESSAGES entries already surfaced via get_chat_history — i.e.
+        messages that fell out of the rolling window but are still held in RAM.
+        Most-recent-first among the excluded range; oldest-first order overall.
+        """
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            if chat_id not in self.chat_storage:
+                return []
+
+            history = list(self.chat_storage[chat_id]["history"])
+
+        older = history[:-MAX_CONTEXT_MESSAGES] if len(history) > MAX_CONTEXT_MESSAGES else []
+        texts = [text for uid, role, text in older if uid == user_id and role == "user"]
+        return texts[-limit:]
+
     def last_sender_is_bot(self, chat_id: int) -> bool:
         """Returns True if the last recorded message in the chat was from the bot."""
         with self._lock:

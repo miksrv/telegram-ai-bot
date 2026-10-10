@@ -5,7 +5,14 @@ from datetime import datetime
 
 import requests
 
-from config.settings import MAX_INPUT_CHARS, PROACTIVE_CONTEXT_MESSAGES, PROACTIVE_MIN_CONTEXT_MESSAGES
+from config.settings import (
+    MAX_INPUT_CHARS,
+    PERSONALIZATION_EARLIER_MESSAGE_CHARS,
+    PERSONALIZATION_EARLIER_MESSAGES_COUNT,
+    PROACTIVE_CONTEXT_MESSAGES,
+    PROACTIVE_MIN_CONTEXT_MESSAGES,
+    PROFILE_FULL_UPDATE_INTERVAL,
+)
 from core.llm import llm_engine
 from core.llm.base import LLMEmptyResponseError
 from core.memory import memory
@@ -17,10 +24,12 @@ from core.prompts import (
     build_reply_only_system_prompt,
     get_vision_prompt,
 )
-from database.db import get_recent_messages
+from database.db import get_recent_messages, get_recent_user_messages
 from database.profile_repo import (
+    db_get_display_names,
     db_get_user_profile,
     db_increment_message_count,
+    db_update_user_facts,
     db_update_user_notes,
     db_update_user_profile,
 )
@@ -55,10 +64,12 @@ class TARSBrain:
 
         user_message = user_message[:MAX_INPUT_CHARS]
 
-        chat_history, identity_block, profile_summary, profile = self._build_user_context(chat_id, user_id, identity)
+        chat_history, identity_block, profile_summary, profile, user_names = self._build_user_context(
+            chat_id, user_id, identity
+        )
 
-        # Full profile update on first message (msg_count==0) and every 5th thereafter
-        want_full_update = profile["message_count"] % 5 == 0
+        # Full profile update on first message (msg_count==0) and every Nth thereafter
+        want_full_update = profile["message_count"] % PROFILE_FULL_UPDATE_INTERVAL == 0
 
         if want_full_update:
             system_content = build_general_system_prompt(identity_block, profile_summary)
@@ -66,7 +77,7 @@ class TARSBrain:
             system_content = build_reply_only_system_prompt(identity_block, profile_summary)
 
         messages = self._build_messages_array(
-            chat_history, user_message, system_content, reply_to_text, reply_to_is_bot
+            chat_history, user_message, system_content, reply_to_text, reply_to_is_bot, user_names
         )
 
         try:
@@ -114,11 +125,11 @@ class TARSBrain:
     ):
 
         try:
-            chat_history, identity_block, profile_summary, profile = self._build_user_context(
+            chat_history, identity_block, profile_summary, profile, user_names = self._build_user_context(
                 chat_id, user_id, identity
             )
 
-            want_full_update = profile["message_count"] % 5 == 0
+            want_full_update = profile["message_count"] % PROFILE_FULL_UPDATE_INTERVAL == 0
 
             caption_text = (caption or "").strip()
             vision_message = f"[IMAGE]\nCaption: {caption_text}" if caption_text else "[IMAGE]"
@@ -140,7 +151,7 @@ class TARSBrain:
             # global context, ancient-reply pruning, and quote handling. Its final user
             # turn (a plain string) is then upgraded to a multimodal text+image message.
             messages = self._build_messages_array(
-                history, vision_message, system_content, reply_to_text, reply_to_is_bot
+                history, vision_message, system_content, reply_to_text, reply_to_is_bot, user_names
             )
 
             img = session.get(image_url, timeout=15)
@@ -259,6 +270,13 @@ class TARSBrain:
             notes = self._normalize_notes(data.get("notes"))
             if notes:
                 db_update_user_notes(user_id, notes)
+
+            facts_update = data.get("facts")
+            if facts_update:
+                if isinstance(facts_update, dict):
+                    db_update_user_facts(user_id, facts_update)
+                else:
+                    logging.warning(f"Ignoring non-dict facts for user {user_id}: {facts_update!r}")
         except Exception:
             logging.exception(f"Failed to apply profile/notes update for user {user_id}")
 
@@ -297,15 +315,84 @@ class TARSBrain:
 
         profile = db_get_user_profile(user_id, identity)
 
+        # One batched lookup for every distinct user_id appearing in the window,
+        # instead of one DB query per turn — used to label history with real
+        # names instead of User#<id> (see _build_messages_array).
+        window_user_ids = {uid for uid, role, _ in chat_history if role == "user"}
+        user_names = db_get_display_names(window_user_ids) if window_user_ids else {}
+
         dynamic_rules = PersonalityEngine.build_prompt_rules(profile)
+        facts_line = self._format_facts(profile.get("facts") or {})
+        earlier_block = self._build_earlier_messages_block(chat_id, user_id, chat_history)
 
         profile_summary = (
             dynamic_rules + "\n\n"
             f"Interests: {', '.join(profile['interests']) or 'none'}\n"
             f"Notes: {profile['notes'] or 'none'}"
         )
+        if facts_line:
+            profile_summary += f"\nFacts: {facts_line}"
+        if earlier_block:
+            profile_summary += f"\n{earlier_block}"
 
-        return chat_history, identity_block, profile_summary, profile
+        return chat_history, identity_block, profile_summary, profile, user_names
+
+    @staticmethod
+    def _format_facts(facts: dict) -> str:
+        """Renders structured user facts compactly for the user card: `key: value;
+        ...`, omitting empty values. A list value (e.g. "topics") is joined with
+        commas rather than repeated as separate entries."""
+        if not isinstance(facts, dict) or not facts:
+            return ""
+
+        parts = []
+        for key, value in facts.items():
+            if isinstance(value, list):
+                value = ", ".join(str(v) for v in value)
+            value = str(value).strip()
+            if value:
+                parts.append(f"{key}: {value}")
+
+        return "; ".join(parts)
+
+    def _build_earlier_messages_block(self, chat_id, user_id, chat_history) -> str:
+        """Builds a terse, clearly-labeled background block of up to
+        PERSONALIZATION_EARLIER_MESSAGES_COUNT of this user's own earlier
+        messages that fell out of the rolling window — capped and char-truncated
+        per the token-economy constraint. Returns "" when there is nothing to add.
+        """
+        count = PERSONALIZATION_EARLIER_MESSAGES_COUNT
+        if count <= 0:
+            return ""
+
+        window_texts = {(text or "").strip() for uid, role, text in chat_history if role == "user" and uid == user_id}
+
+        texts = memory.get_user_earlier_messages(chat_id, user_id, count)
+
+        if len(texts) < count:
+            try:
+                db_texts = get_recent_user_messages(chat_id, user_id, count - len(texts))
+                texts = db_texts + texts  # DB rows are older than anything still in RAM
+            except Exception:
+                logging.exception(f"Failed to fetch DB supplement for earlier messages (user={user_id})")
+
+        seen = set()
+        snippets = []
+        for text in texts:
+            text = (text or "").strip()
+            if not text or text in window_texts or text in seen:
+                continue
+            seen.add(text)
+            snippets.append(text[:PERSONALIZATION_EARLIER_MESSAGE_CHARS])
+
+        snippets = snippets[-count:]
+        if not snippets:
+            return ""
+
+        quoted = " | ".join(f'"{s}"' for s in snippets)
+        return (
+            f"Earlier messages from this user (background only — current conversation below takes priority): {quoted}"
+        )
 
     # --------------------------------------------------
     # Build proper chat completions messages array from raw chat history
@@ -317,8 +404,10 @@ class TARSBrain:
         system_content: str,
         reply_to_text: str = None,
         reply_to_is_bot: bool = True,
+        user_names: dict = None,
     ) -> list:
         messages = [{"role": "system", "content": system_content}]
+        user_names = user_names or {}
 
         snippet = reply_to_text[:MAX_INPUT_CHARS].strip() if reply_to_text else ""
 
@@ -351,7 +440,8 @@ class TARSBrain:
         last_assistant_text = None
         for user_id, role, text in chat_history:
             if role == "user":
-                messages.append({"role": "user", "content": f"User#{user_id}: {text}"})
+                name = user_names.get(user_id) or f"User#{user_id}"
+                messages.append({"role": "user", "content": f"{name}: {text}"})
             else:
                 messages.append({"role": "assistant", "content": text})
                 last_assistant_text = text

@@ -23,6 +23,22 @@ def test_messages_array_basic_shape():
     assert messages[-1] == {"role": "user", "content": "как дела?"}
 
 
+def test_messages_array_uses_display_name_when_provided():
+    """user_names labels history turns with a real name instead of User#<id>."""
+    brain = make_brain()
+    history = [(100, "user", "привет"), (100, "assistant", "здравствуй")]
+    messages = brain._build_messages_array(history, "как дела?", "SYS", user_names={100: "Иван"})
+    assert messages[1] == {"role": "user", "content": "Иван: привет"}
+
+
+def test_messages_array_falls_back_to_user_id_when_name_missing():
+    """A user_id absent from the batched lookup still falls back to User#<id>."""
+    brain = make_brain()
+    history = [(100, "user", "привет")]
+    messages = brain._build_messages_array(history, "?", "SYS", user_names={200: "Другой"})
+    assert messages[1] == {"role": "user", "content": "User#100: привет"}
+
+
 def test_reply_to_injected_when_absent_from_history():
     """Replying to a proactive post (not in memory) surfaces it as the last assistant turn."""
     brain = make_brain()
@@ -517,6 +533,202 @@ def test_db_error_during_profile_update_still_returns_reply(monkeypatch, caplog)
     assert err is None
     assert reply == "ok"
     assert any("profile/notes" in rec.message.lower() for rec in caplog.records)
+
+
+# --------------------------------------------------
+# _build_earlier_messages_block — per-user background context, capped and
+# deduped against the current rolling window
+# --------------------------------------------------
+
+
+def test_earlier_messages_block_surfaces_memory_only_messages(monkeypatch):
+    from core import brain as brain_mod
+
+    chat_id, user_id = 42, 7
+    monkeypatch.setattr(brain_mod, "get_recent_user_messages", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        brain_mod.memory,
+        "get_user_earlier_messages",
+        lambda cid, uid, limit: ["старое сообщение один", "старое сообщение два"],
+    )
+
+    block = make_brain()._build_earlier_messages_block(chat_id, user_id, chat_history=[])
+    assert "Earlier messages from this user" in block
+    assert "старое сообщение один" in block
+    assert "старое сообщение два" in block
+
+
+def test_earlier_messages_block_dedupes_against_window(monkeypatch):
+    from core import brain as brain_mod
+
+    chat_id, user_id = 42, 7
+    monkeypatch.setattr(brain_mod, "get_recent_user_messages", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        brain_mod.memory,
+        "get_user_earlier_messages",
+        lambda cid, uid, limit: ["уже в окне", "новое сообщение"],
+    )
+
+    chat_history = [(user_id, "user", "уже в окне")]
+    block = make_brain()._build_earlier_messages_block(chat_id, user_id, chat_history)
+    assert "новое сообщение" in block
+    assert "уже в окне" not in block
+
+
+def test_earlier_messages_block_is_capped_and_truncated(monkeypatch):
+    from core import brain as brain_mod
+
+    chat_id, user_id = 42, 7
+    monkeypatch.setattr(brain_mod, "PERSONALIZATION_EARLIER_MESSAGES_COUNT", 2)
+    monkeypatch.setattr(brain_mod, "PERSONALIZATION_EARLIER_MESSAGE_CHARS", 10)
+    monkeypatch.setattr(brain_mod, "get_recent_user_messages", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        brain_mod.memory,
+        "get_user_earlier_messages",
+        lambda cid, uid, limit: ["a" * 50, "b" * 50, "c" * 50],
+    )
+
+    block = make_brain()._build_earlier_messages_block(chat_id, user_id, chat_history=[])
+    # Capped to 2 snippets, each truncated to 10 chars.
+    assert block.count('"') == 4
+    assert "a" * 50 not in block
+    assert "a" * 10 in block or "b" * 10 in block
+
+
+def test_earlier_messages_block_empty_when_nothing_to_add(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "get_recent_user_messages", lambda *a, **kw: [])
+    monkeypatch.setattr(brain_mod.memory, "get_user_earlier_messages", lambda cid, uid, limit: [])
+
+    block = make_brain()._build_earlier_messages_block(1, 2, chat_history=[])
+    assert block == ""
+
+
+def test_earlier_messages_block_falls_back_to_db_supplement(monkeypatch):
+    """When memory doesn't hold enough of this user's own turns, the DB
+    (messages table) supplements the remainder."""
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "PERSONALIZATION_EARLIER_MESSAGES_COUNT", 3)
+    monkeypatch.setattr(brain_mod.memory, "get_user_earlier_messages", lambda cid, uid, limit: ["из памяти"])
+    monkeypatch.setattr(brain_mod, "get_recent_user_messages", lambda cid, uid, limit: ["из базы данных"])
+
+    block = make_brain()._build_earlier_messages_block(1, 2, chat_history=[])
+    assert "из памяти" in block
+    assert "из базы данных" in block
+
+
+# --------------------------------------------------
+# _format_facts — compact rendering of structured facts
+# --------------------------------------------------
+
+
+def test_format_facts_renders_compact_line():
+    facts = {"name": "Иван", "experience": "advanced", "topics": ["кометы", "туманности"]}
+    rendered = TARSBrain._format_facts(facts)
+    assert "name: Иван" in rendered
+    assert "experience: advanced" in rendered
+    assert "topics: кометы, туманности" in rendered
+
+
+def test_format_facts_omits_empty_values():
+    rendered = TARSBrain._format_facts({"name": "", "location": "Москва"})
+    assert "name" not in rendered
+    assert "location: Москва" in rendered
+
+
+def test_format_facts_empty_dict_returns_empty_string():
+    assert TARSBrain._format_facts({}) == ""
+    assert TARSBrain._format_facts(None) == ""
+
+
+# --------------------------------------------------
+# _apply_profile_update — structured facts merge/validation
+# --------------------------------------------------
+
+
+def test_apply_profile_update_applies_valid_facts_dict(monkeypatch):
+    from core import brain as brain_mod
+
+    captured = {}
+    monkeypatch.setattr(brain_mod, "db_update_user_facts", lambda user_id, facts: captured.setdefault("facts", facts))
+
+    make_brain()._apply_profile_update(2, {"facts": {"location": "Москва", "experience": "beginner"}})
+    assert captured["facts"] == {"location": "Москва", "experience": "beginner"}
+
+
+def test_apply_profile_update_ignores_non_dict_facts(monkeypatch, caplog):
+    from core import brain as brain_mod
+
+    called = []
+    monkeypatch.setattr(brain_mod, "db_update_user_facts", lambda *a, **kw: called.append(True))
+
+    with caplog.at_level(logging.WARNING):
+        make_brain()._apply_profile_update(2, {"facts": "not a dict"})
+
+    assert not called
+    assert any("facts" in rec.message for rec in caplog.records)
+
+
+# --------------------------------------------------
+# PROFILE_FULL_UPDATE_INTERVAL — controls how often the full-update schema
+# (profile_update/notes/facts) is used, in addition to always on message 0
+# --------------------------------------------------
+
+
+def test_full_update_interval_setting_is_respected(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "PROFILE_FULL_UPDATE_INTERVAL", 2)
+
+    def fake_build_user_context(self, chat_id, user_id, identity):
+        return [], "ID", "PROFILE", {"message_count": 2}, {}
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_build_user_context", fake_build_user_context)
+
+    captured = {}
+
+    def fake_call(self, kind, messages, **kw):
+        captured["messages"] = messages
+        return '{"reply": "ok"}'
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", fake_call)
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_update_user_profile", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_update_user_notes", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_update_user_facts", lambda *a, **kw: None)
+
+    brain_mod.brain.think(chat_id=1, user_id=2, user_message="hi", identity={"id": 2})
+
+    # message_count=2 % PROFILE_FULL_UPDATE_INTERVAL=2 == 0 -> full-update schema used.
+    assert '"profile_update"' in captured["messages"][0]["content"]
+
+
+def test_full_update_interval_skips_on_off_turns(monkeypatch):
+    from core import brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "PROFILE_FULL_UPDATE_INTERVAL", 3)
+
+    def fake_build_user_context(self, chat_id, user_id, identity):
+        return [], "ID", "PROFILE", {"message_count": 1}, {}
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_build_user_context", fake_build_user_context)
+
+    captured = {}
+
+    def fake_call(self, kind, messages, **kw):
+        captured["messages"] = messages
+        return '{"reply": "ok"}'
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", fake_call)
+    monkeypatch.setattr(brain_mod.memory, "add_chat_memory", lambda *a, **kw: None)
+    monkeypatch.setattr(brain_mod, "db_increment_message_count", lambda *a, **kw: None)
+
+    brain_mod.brain.think(chat_id=1, user_id=2, user_message="hi", identity={"id": 2})
+
+    assert '"profile_update"' not in captured["messages"][0]["content"]
 
 
 def test_process_llm_response_treats_null_or_non_string_reply_as_error(monkeypatch):
