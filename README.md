@@ -29,6 +29,7 @@ Both services are optional — the bot starts and runs normally without them; th
 - **Proactive engagement** - autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
 - **Proactive direct reply** - up to a few times per day (default 4), replies directly (as a genuine Telegram reply) to one specific past message picked at random by SQL/Python, not the LLM — spending only one API call on the reply text itself
 - **Swappable persona** - the bot's name, character and tone live in `personas/<name>.md` and are picked by `PERSONA` (`peasant` = Микула, a peasant from ancient Rus'; `tars` = the original robot). A persona can add its own trigger words
+- **Message reactions** - occasionally reacts to chat messages with an emoji picked by keyword matching (no LLM call, rate-limited per chat)
 - **Adaptive personality** - tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
 - **User profiles** - persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
 - **Image analysis** - analyzes photos posted in the chat with astronomical context awareness
@@ -51,6 +52,7 @@ telegram-ai-bot/
 │   └── settings.py                  # All configuration (loaded from .env)
 ├── personas/                        # Persona files (name, character, tone, trigger words): tars.md, peasant.md
 ├── core/
+│   ├── reactions.py                 # Keyword-driven emoji reactions (no LLM), per-chat cooldown
 │   ├── persona.py                   # Loads the active persona file selected by PERSONA
 │   ├── brain.py                     # Builds prompts/context, memory/profile updates, proactive posting; delegates model calls to core/llm
 │   ├── llm/                         # Pluggable LLM engine
@@ -204,6 +206,17 @@ To add a further provider (e.g. Anthropic, a local model server), add one file u
 | `STARMAP_MAX_WAIT` | `120` | Seconds to wait for a finished star chart over MQTT (queued ack + render); starmap-service targets ~90–120s on a Raspberry Pi |
 | `STARMAP_IMAGE_DIR` | _(unset)_ | Shared directory the starmap-service writes charts into. `image_path` values in results are validated against it (realpath + prefix) before being read; unset disables file reads and uses the base64 fallback only |
 | `STARMAP_DELETE_AFTER_SEND` | `false` | Delete the delivered chart file from `STARMAP_IMAGE_DIR` after it's successfully sent to Telegram, so charts don't pile up on disk. Only applies to the `image_path` (file) delivery mode, not the base64 fallback |
+
+### Message reactions (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REACTIONS_ENABLED` | `true` | Master toggle for emoji reactions |
+| `REACTIONS_KEYWORD_PROBABILITY` | `0.15` | Chance of reacting to a message that matches a keyword (Russian and English stems, e.g. galaxy, telescope, moon, thanks) |
+| `REACTIONS_RANDOM_PROBABILITY` | `0.02` | Chance of a random reaction (👍 🔥 🤔 👀) to a message with no keyword match |
+| `REACTIONS_MIN_GAP_SECONDS` | `600` | Minimum seconds between two reactions in the same chat |
+
+Reactions are decided by plain keyword matching, never by the LLM, only in allowed group chats, never for commands, bot messages or messages the bot answers anyway, and only with emoji Telegram permits for bots. A failed Telegram call is logged and ignored.
 
 ### Logging (optional)
 

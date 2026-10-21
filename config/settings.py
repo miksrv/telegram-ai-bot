@@ -239,6 +239,18 @@ PROACTIVE_REPLY_MIN_WORD_COUNT = int(os.getenv("PROACTIVE_REPLY_MIN_WORD_COUNT",
 PROACTIVE_REPLY_MIN_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MIN_DELAY_SECONDS", "3600"))
 PROACTIVE_REPLY_MAX_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MAX_DELAY_SECONDS", "43200"))
 
+# --------------------------------------------------
+# Message reactions (no LLM)
+# --------------------------------------------------
+# The bot occasionally reacts to ordinary chat messages with an emoji, chosen by
+# keyword matching (core/reactions.py). Master toggle, probabilities and a
+# per-chat minimum gap keep it rare.
+
+REACTIONS_ENABLED = os.getenv("REACTIONS_ENABLED", "true").lower() == "true"
+REACTIONS_KEYWORD_PROBABILITY = float(os.getenv("REACTIONS_KEYWORD_PROBABILITY", "0.15"))
+REACTIONS_RANDOM_PROBABILITY = float(os.getenv("REACTIONS_RANDOM_PROBABILITY", "0.02"))
+REACTIONS_MIN_GAP_SECONDS = int(os.getenv("REACTIONS_MIN_GAP_SECONDS", "600"))
+
 MESSAGE_TTL_SECONDS = int(os.getenv("MESSAGE_TTL_SECONDS", "86400"))
 CLEANUP_LOOP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_LOOP_INTERVAL_SECONDS", "1800"))
 PROACTIVE_LOOP_INTERVAL_SECONDS = int(os.getenv("PROACTIVE_LOOP_INTERVAL_SECONDS", "600"))

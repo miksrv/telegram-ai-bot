@@ -20,6 +20,7 @@ from core.brain import brain
 from core.cooldown import cooldowns
 from core.llm import llm_engine
 from core.memory import memory
+from core.reactions import maybe_react
 from database.db import ensure_user_profile_exists, save_message
 from utils.identity import extract_telegram_identity
 from utils.photo import extract_photo_url
@@ -99,6 +100,18 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
             )
         except Exception as e:
             logging.error(f"Observe error: {e}")
+
+    # --- Reaction: a keyword-picked emoji, no LLM. Skipped for messages the bot answers
+    # anyway (trigger/reply) so the bot does not both react to and answer one message.
+    if (
+        chat_id in allowed_chat_ids
+        and message.chat.type != "private"
+        and message.content_type == "text"
+        and not message.from_user.is_bot
+        and not text_content.startswith("/")
+        and not (has_trigger or is_reply)
+    ):
+        maybe_react(bot, message)
 
     # --- Extract text and photo ---
     photo_url, caption, photo_from_reply = extract_photo_url(bot, message)

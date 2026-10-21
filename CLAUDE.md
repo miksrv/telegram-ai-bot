@@ -21,6 +21,7 @@ core/
     groq_provider.py              # GroqProvider(LLMProvider)
     openai_provider.py            # OpenAIProvider(LLMProvider)
   memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot/get_user_earlier_messages helpers
+  reactions.py                   # Keyword-driven emoji reactions (no LLM): match_keyword/pick_reaction/maybe_react, per-chat cooldown, allowed-emoji guard
   prompts.py                     # Structural prompt templates (JSON contract, plain-text rules, user card) + builders, persona text injected (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
@@ -116,6 +117,9 @@ Integration with the separate **starmap-service** repo (its `API.md` is the shar
 
 > Gap noted in the service: `map_type: optic` (object through a given optic) requires explicit `target.ra`/`target.dec`; resolving an object name (e.g. `M31`) to coordinates is not implemented server-side, so no `/optic`-style command is exposed yet.
 
+### Message reactions (no LLM)
+In `handlers/message_handler.py`, right after the observe block (and before the trigger/cooldown gate), `core.reactions.maybe_react(bot, message)` runs for text messages in an allowed, non-private chat that are not from a bot, not commands, and not addressed to the bot (no trigger word, not a reply to the bot — the bot answers those instead of reacting). `maybe_react` returns early if `REACTIONS_ENABLED` is false or the per-chat cooldown (`REACTIONS_MIN_GAP_SECONDS`) has not elapsed; then `pick_reaction` does keyword matching on the lowercased text (`_KEYWORD_PATTERNS`: ~17 emoji groups, ~190 Russian/English patterns, matched at word start, first group wins) and rolls `REACTIONS_KEYWORD_PROBABILITY`; with no keyword match it rolls the much smaller `REACTIONS_RANDOM_PROBABILITY` and picks from `RANDOM_REACTIONS` (👍 🔥 🤔 👀). The chosen emoji must be in `ALLOWED_REACTION_EMOJI` (Telegram's fixed list for bots; a test checks every emoji we use against it), then `bot.set_message_reaction(chat_id, message_id, [types.ReactionTypeEmoji(emoji)])` is called (pyTelegramBotAPI 4.15.4 supports it). The cooldown slot is claimed before the call; any exception is logged and swallowed, so message handling never breaks. State (cooldowns) is in RAM only.
+
 ### CubeSat photo (/photo)
 1. `photo_handler.handle_photo` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "take_photo", "request_id": ..., "params": {"overlay": ...}}` to `cubesat/command`
 2. Posts a transient "Запрашиваю фото…" status message as a reply to the command, then spawns a background daemon thread that waits up to 45s for the matching reply on `cubesat/payload/photo` (polling thread is **not** blocked)
@@ -150,6 +154,14 @@ LLM engine selection — only the key for the active engine is required (see "LL
 LLM_ENGINE=      # "groq" or "openai" (default: groq)
 GROQ_API_KEY=    # Required when LLM_ENGINE=groq
 OPENAI_API_KEY=  # Required when LLM_ENGINE=openai
+```
+
+Optional message reaction variables (see `.env.example`):
+```env
+REACTIONS_ENABLED=                # Master toggle (default: true)
+REACTIONS_KEYWORD_PROBABILITY=    # Chance to react when a keyword matches (default: 0.15)
+REACTIONS_RANDOM_PROBABILITY=     # Chance of a random reaction to unmatched messages (default: 0.02)
+REACTIONS_MIN_GAP_SECONDS=        # Per-chat minimum gap between reactions (default: 600)
 ```
 
 Optional proactive engagement variables (see `.env.example` for the full list):
