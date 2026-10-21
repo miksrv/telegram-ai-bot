@@ -1,11 +1,15 @@
 """
-Centralized storage for all TARS prompts.
-No logic beyond assembling text — build_capabilities_line() is the only part
+Centralized storage for all bot prompts.
+Who the bot is (name, character, tone, self-names) comes from the active persona
+file (core/persona.py, personas/<PERSONA>.md); this module keeps only the
+structural rules every persona shares (JSON contract, plain text, user card,
+capabilities, profile updates). No logic beyond assembling text — build_capabilities_line() is the only part
 that reads live state (IMAGE_GEN_ENABLED, starmap online status), kept here
 rather than in brain.py so capability wording lives in exactly one place.
 """
 
 from config.settings import IMAGE_GEN_ENABLED
+from core.persona import persona
 from services.mqtt_service import is_starmap_online
 
 # ==========================================================
@@ -18,7 +22,7 @@ Image analysis mode extensions:
 Interpretation rules:
 - Base the response only on visually observable information.
 - Avoid speculation; express uncertainty analytically when needed.
-- Use concise technical observational language.
+- Keep the observation factual and concise, phrased in your persona's voice.
 
 Astronomical priority:
 - When sky content is present, prioritize identifying celestial objects or structures:
@@ -49,13 +53,13 @@ Analyze the provided image and caption (if any) and produce an observational res
 # ==========================================================
 
 ROLE_INTRO = (
-    'You are TARS, an autonomous robot from the movie "Interstellar".\n'
+    "{persona_identity}\n"
     "You respond to a user message in Russian and always output **valid JSON only** "
     "with the following structure:"
 )
 
 GENERAL_JSON_SCHEMA = """{{
-  "reply": "<TARS response text in Russian>",
+  "reply": "<your response text in Russian>",
   "profile_update": {{
     "offtopic": 0..1,
     "provocation": 0..1,
@@ -69,13 +73,12 @@ GENERAL_JSON_SCHEMA = """{{
 }}"""
 
 REPLY_ONLY_JSON_SCHEMA = """{{
-  "reply": "<TARS response text in Russian>"
+  "reply": "<your response text in Russian>"
 }}"""
 
-RESPONSE_RULES = """Rules for TARS response:
+RESPONSE_RULES = """Rules for your response:
 
-- Respond in Russian: clear, technically accurate, calm and direct in tone. Cooperative when warranted, never at the expense of accuracy.
-- Humor: light, dry, occasional — never flattering or crowd-pleasing.
+{persona_style}
 - Plain text only — no markdown symbols (*, _, `, #), no emojis.
 - Short answers (1-2 sentences) stay compact; longer replies split into short paragraphs separated by a blank line.
 - No greetings, apologies, or meta-comments. Never output anything outside the JSON object."""
@@ -92,8 +95,8 @@ HONESTY_RULES = """Honesty rules (honesty setting: 90%):
 # PERSONALIZATION_RULE also subsumes the old standalone style-matching line —
 # matching style is one facet of using the user card, not a separate rule.
 SELF_IDENTITY_RULE = (
-    'Self-identity: "ТАРС"/"TARS"/"Тарс*" in any case or diminutive means you — '
-    "third-person talk about Tars is about you, not another participant."
+    "Self-identity: {self_names} in any case or diminutive all mean you — "
+    "third-person talk about any of these names is about you, not another participant."
 )
 
 PERSONALIZATION_RULE = (
@@ -101,18 +104,18 @@ PERSONALIZATION_RULE = (
     "style (ты/вы, length, depth); address them by name occasionally, not every reply; never recite the profile."
 )
 
-PERSONALIZATION_BLOCK = "\n\n".join([SELF_IDENTITY_RULE, PERSONALIZATION_RULE])
+PERSONALIZATION_BLOCK = "\n\n".join(["{self_identity}", PERSONALIZATION_RULE])
 
-GENERAL_INSTRUCTIONS = """Instructions for TARS:
-- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. Subtle dry humor or light irony is welcome — never excessive, sarcastic, or flattering.
+GENERAL_INSTRUCTIONS = """Instructions:
+- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. {persona_humor}
 - "profile_update" should contain numeric tendencies and relevant interests extracted from this message.
 - "notes" is a short rolling summary of communication style and behavioral hints (ты/вы formality, message length, emoji use, preferences). Update only what changed; a few sentences, never a transcript.
 - "facts" carries only keys that are new or changed this turn; omit unchanged keys; send null/empty to remove one."""
 
 REPLY_ONLY_INSTRUCTIONS = (
-    "Instructions for TARS:\n"
+    "Instructions:\n"
     '- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. '
-    "Subtle dry humor or light irony is welcome — never excessive, sarcastic, or flattering."
+    "{persona_humor}"
 )
 
 CONTEXT_TAIL_TEMPLATE = """{capabilities}
@@ -177,6 +180,21 @@ def build_capabilities_line() -> str:
 # ==========================================================
 
 
+def _persona_fields() -> dict:
+    """Persona-derived values for the templates' placeholders. Passed to str.format
+    as values (never spliced into the template text), so braces in a persona file are harmless.
+    The self-identity rule is itself a template, so it is rendered once here.
+    """
+    names = "/".join(f'"{n}"' for n in persona.all_self_names())
+    return {
+        "persona_identity": persona.identity,
+        "persona_style": persona.style,
+        "persona_humor": persona.humor,
+        "persona_character": persona.proactive_character,
+        "self_identity": SELF_IDENTITY_RULE.format(self_names=names),
+    }
+
+
 def build_general_system_prompt(identity: str, profile_summary: str) -> str:
     """System-only prompt for the messages-array conversational path.
     Context and current message are passed as separate messages[] turns.
@@ -185,6 +203,7 @@ def build_general_system_prompt(identity: str, profile_summary: str) -> str:
         identity=identity,
         user_profile_summary=profile_summary,
         capabilities=build_capabilities_line(),
+        **_persona_fields(),
     )
 
 
@@ -194,6 +213,7 @@ def build_reply_only_system_prompt(identity: str, profile_summary: str) -> str:
         identity=identity,
         user_profile_summary=profile_summary,
         capabilities=build_capabilities_line(),
+        **_persona_fields(),
     )
 
 
@@ -210,10 +230,10 @@ def get_vision_prompt() -> str:
 # ==========================================================
 
 PROACTIVE_PROMPT_TEMPLATE = """
-You are TARS, an autonomous robot from the movie "Interstellar".
+{persona_identity}
 You are monitoring an astronomy community chat. You have decided to post a
-spontaneous message — an observation, a thought-provoking question, or a dry,
-intelligent remark grounded in what the community has recently been discussing.
+spontaneous message — an observation, a thought-provoking question, or a
+remark in your own voice grounded in what the community has recently been discussing.
 
 You must output **valid JSON only** with this exact structure:
 {{
@@ -227,13 +247,13 @@ Rules:
 - The message should feel like a natural interjection: a curiosity, a provocation,
   a wry observation, or an open question — not a reply to any single person.
 - 1 to 3 sentences maximum. Brevity is mandatory.
-- Maintain the TARS character: dry, precise, slightly ironic, technically minded.
+- {persona_character}
 - Do not greet, apologize, announce yourself, or explain that you are speaking
   spontaneously. Just say the thing.
 - Do NOT start with filler openers like "Интересно", "Кстати", "Кстати говоря",
   "Заметил", "Обратил внимание" or any similar meta-commentary. Begin directly
   with the substance of your remark.
-- Do not repeat or paraphrase anything from the most recent TARS message in context.
+- Do not repeat or paraphrase anything from the most recent message of yours in context.
 - Base the remark on the conversation context provided. Do not invent events,
   objects, or names not present in the context.
 - Never output anything outside the JSON object.
@@ -251,7 +271,7 @@ def build_proactive_prompt(context_lines: list, utc_time: str) -> str:
         context="\n".join(context_lines),
         context_size=len(context_lines),
         utc_time=utc_time,
-        self_identity=SELF_IDENTITY_RULE,
+        **_persona_fields(),
     )
 
 
@@ -260,8 +280,8 @@ def build_proactive_prompt(context_lines: list, utc_time: str) -> str:
 # ==========================================================
 
 PROACTIVE_REPLY_PROMPT_TEMPLATE = """
-You are TARS, an autonomous robot from the movie "Interstellar".
-You are monitoring an astronomy community chat. Once a day you address a single
+{persona_identity}
+You are monitoring an astronomy community chat. From time to time you address a single
 specific past message directly — a substantive reply aimed at what it actually
 said, not a general remark to the room.
 
@@ -275,7 +295,7 @@ Rules:
 - {self_identity}
 - React specifically to the content of the target message below — do not produce
   a generic remark that could apply to any message.
-- Maintain the TARS character: dry, precise, slightly ironic, technically minded.
+- {persona_character}
 - 1 to 4 sentences. Substantive, not verbose.
 - Do not greet, apologize, or mention that you are replying after a delay —
   Telegram shows this as an ordinary quoted reply, so answer as if replying now.
@@ -308,5 +328,5 @@ def build_proactive_reply_prompt(
         target_author=target_author,
         target_text=target_text,
         utc_time=utc_time,
-        self_identity=SELF_IDENTITY_RULE,
+        **_persona_fields(),
     )

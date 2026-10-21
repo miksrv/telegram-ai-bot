@@ -8,6 +8,7 @@ from config.settings import (
     MEMORY_LIMIT,
     MEMORY_TTL_SECONDS,
 )
+from core.persona import persona
 from database.db import flush_memory, load_memory
 
 ChatHistoryEntry = Tuple[int, str, str]  # (user_id, role, text)
@@ -28,6 +29,10 @@ class MemoryManager:
     def __init__(self):
         self._lock = threading.Lock()
         self.chat_storage: Dict[int, Dict] = {}
+        # Unix time of the bot's last message per chat. Not persisted on its own: _load
+        # seeds it from the restored history so the proactive "bot spoke last" guard
+        # survives a restart; 0 (unknown) is treated as "no".
+        self._last_bot_at: Dict[int, float] = {}
         self._load()
 
     def _load(self):
@@ -38,6 +43,10 @@ class MemoryManager:
                 "last_access": data["last_access"],
                 "history": deque(data["history"], maxlen=MEMORY_LIMIT),
             }
+            # last_access is the closest saved time to that last bot turn (it can only be later,
+            # which errs on the side of the guard keeping the bot quiet until the next user message).
+            if data["history"] and data["history"][-1][1] == "assistant":
+                self._last_bot_at[chat_id] = float(data["last_access"])
 
     # ==================================================
     # CHAT CONTEXT
@@ -55,7 +64,7 @@ class MemoryManager:
 
         lines = []
         for user_id, role, text in snapshot:
-            speaker = f"User#{user_id}" if role == "user" else "TARS"
+            speaker = f"User#{user_id}" if role == "user" else persona.name
             lines.append(f"{speaker}: {text}")
 
         return "\n".join(lines)
@@ -90,6 +99,7 @@ class MemoryManager:
 
             store["history"].append((user_id, "user", user_msg))
             store["history"].append((user_id, "assistant", bot_reply))
+            self._last_bot_at[chat_id] = time.time()
 
     def add_bot_message(self, chat_id: int, text: str):
         """Records a standalone bot message (e.g. a proactive post) as an assistant turn.
@@ -107,6 +117,7 @@ class MemoryManager:
             store = self.chat_storage[chat_id]
             store["last_access"] = time.time()
             store["history"].append((0, "assistant", text))
+            self._last_bot_at[chat_id] = time.time()
 
     def get_user_earlier_messages(self, chat_id: int, user_id: int, limit: int) -> list:
         """Returns up to `limit` of this user's own user-turn texts from the chat's
@@ -127,6 +138,17 @@ class MemoryManager:
         older = history[:-MAX_CONTEXT_MESSAGES] if len(history) > MAX_CONTEXT_MESSAGES else []
         texts = [text for uid, role, text in older if uid == user_id and role == "user"]
         return texts[-limit:]
+
+    def last_bot_message_at(self, chat_id: int) -> float:
+        """Unix time of the bot's last message in the chat, 0 if unknown.
+
+        Unlike last_sender_is_bot, this can be compared with the timestamp of the
+        latest observed user message: chat memory only holds turns the bot took part
+        in, so a human's plain chatter never lands there and "last entry is the bot"
+        alone would stay true while people keep talking.
+        """
+        with self._lock:
+            return self._last_bot_at.get(chat_id, 0.0)
 
     def last_sender_is_bot(self, chat_id: int) -> bool:
         """Returns True if the last recorded message in the chat was from the bot."""

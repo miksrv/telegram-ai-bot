@@ -5,6 +5,7 @@ def make_mm() -> MemoryManager:
     """Fresh MemoryManager with empty in-RAM storage (DB may exist but is empty in CI)."""
     mm = MemoryManager()
     mm.chat_storage.clear()
+    mm._last_bot_at.clear()
     return mm
 
 
@@ -120,3 +121,39 @@ def test_size_tracks_active_chats():
     mm.add_chat_memory(10, 1, "a", "b")
     mm.add_chat_memory(20, 1, "c", "d")
     assert mm.size()["chats"] == 2
+
+
+# --------------------------------------------------
+# last_bot_message_at
+# --------------------------------------------------
+
+
+def test_last_bot_message_at_unknown_chat_is_zero():
+    assert make_mm().last_bot_message_at(999) == 0
+
+
+def test_last_bot_message_at_set_by_reply_and_proactive_post():
+    mm = make_mm()
+    mm.add_chat_memory(1, 100, "hello", "hi")
+    assert mm.last_bot_message_at(1) > 0
+    mm.add_bot_message(2, "post")
+    assert mm.last_bot_message_at(2) > 0
+
+
+def test_last_bot_message_at_seeded_from_restored_history(monkeypatch):
+    """After a restart the guard must still know the bot spoke last (persisted history)."""
+    import core.memory as memory_mod
+
+    monkeypatch.setattr(
+        memory_mod,
+        "load_memory",
+        lambda: {
+            1: {"last_access": 1000.0, "history": [(5, "user", "q"), (5, "assistant", "a")]},
+            2: {"last_access": 2000.0, "history": [(0, "assistant", "post"), (7, "user", "q")]},
+            3: {"last_access": 3000.0, "history": []},
+        },
+    )
+    mm = MemoryManager()
+    assert mm.last_bot_message_at(1) == 1000.0
+    assert mm.last_bot_message_at(2) == 0
+    assert mm.last_bot_message_at(3) == 0

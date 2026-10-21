@@ -512,7 +512,7 @@ class TARSBrain:
             return None
 
     # --------------------------------------------------
-    # PROACTIVE DIRECT REPLY (once-daily, targets one specific message)
+    # PROACTIVE DIRECT REPLY (daily budget, targets one specific message)
     # --------------------------------------------------
     def post_proactive_reply(self, chat_id: int, target_text: str, target_author: str):
         """

@@ -1,9 +1,11 @@
 """
-ProactiveEngine — per-chat state machine governing when TARS posts proactively.
+ProactiveEngine — per-chat state machine governing when the bot posts proactively.
 
 State resets on restart (the daily cap is a UX constraint, not a safety invariant).
-Besides the general proactive posts, the engine also governs a once-daily direct
-reply to a specific past message (see should_post_reply/record_reply below).
+Besides the general proactive posts, the engine also governs direct replies to
+specific past messages, up to PROACTIVE_REPLY_MAX_PER_DAY a day (see
+should_post_reply/record_reply below). Neither feature fires when the bot itself
+spoke last in the chat (see _bot_spoke_last).
 """
 
 import calendar
@@ -24,6 +26,7 @@ from config.settings import (
     PROACTIVE_REPLY_MIN_DELAY_SECONDS,
     PROACTIVE_REPLY_MIN_WORD_COUNT,
 )
+from core.memory import memory
 from database.db import get_latest_message_timestamp, get_recent_messages, get_reply_candidate
 
 
@@ -45,7 +48,7 @@ class ProactiveEngine:
                                   respect a single PROACTIVE_MIN_GAP_SECONDS gap
         next_attempt_at        — earliest the loop may fire a general post
         reply_count_today      — direct replies sent today (resets at UTC midnight)
-        next_reply_attempt_at  — earliest the loop may fire the daily direct reply
+        next_reply_attempt_at  — earliest the loop may fire the next direct reply
     """
 
     def __init__(self):
@@ -83,6 +86,11 @@ class ProactiveEngine:
         if get_latest_message_timestamp(chat_id) <= last_posted_at:
             return False
 
+        # Don't post right after the bot's own message (also covers conversational
+        # replies and a restart-lost last_posted_at, as long as memory knows them)
+        if self._bot_spoke_last(chat_id):
+            return False
+
         return True
 
     def record_post(self, chat_id: int):
@@ -103,7 +111,7 @@ class ProactiveEngine:
             self._state[chat_id]["next_attempt_at"] = time.time() + PROACTIVE_NEXT_MIN_SECONDS
 
     # --------------------------------------------------
-    # Public API — once-daily direct reply to a specific message
+    # Public API — direct replies to specific past messages
     # --------------------------------------------------
 
     def should_post_reply(self, chat_id: int) -> Optional[dict]:
@@ -131,6 +139,11 @@ class ProactiveEngine:
         if len(rows) < PROACTIVE_MIN_CONTEXT_MESSAGES:
             return None
 
+        # A reply is a directed remark, but with no human message since the bot's
+        # last one it would just be the bot talking to itself: wait for the chat.
+        if self._bot_spoke_last(chat_id):
+            return None
+
         return get_reply_candidate(chat_id, PROACTIVE_REPLY_MIN_WORD_COUNT)
 
     def record_reply(self, chat_id: int):
@@ -142,10 +155,15 @@ class ProactiveEngine:
 
             s["reply_count_today"] += 1
             s["last_posted_at"] = now
-            # Budget is exhausted for the day either way (default cap is 1); park
-            # the next attempt at the day boundary, where _reset_day_if_needed
-            # will re-roll a fresh random delay for the following day.
-            s["next_reply_attempt_at"] = s["day_reset_at"]
+            if s["reply_count_today"] >= PROACTIVE_REPLY_MAX_PER_DAY:
+                # Budget exhausted: park at the day boundary, where _reset_day_if_needed
+                # re-rolls a fresh random delay for the following day.
+                s["next_reply_attempt_at"] = s["day_reset_at"]
+            else:
+                # Budget remains: try again later today, spaced like general posts.
+                s["next_reply_attempt_at"] = now + random.randint(
+                    PROACTIVE_NEXT_MIN_SECONDS, PROACTIVE_NEXT_MAX_SECONDS
+                )
 
     def reschedule_reply_failed(self, chat_id: int):
         """Called when the reply LLM call failed — retries later without consuming budget."""
@@ -156,6 +174,19 @@ class ProactiveEngine:
     # --------------------------------------------------
     # Internal helpers
     # --------------------------------------------------
+
+    @staticmethod
+    def _bot_spoke_last(chat_id: int) -> bool:
+        """True when the bot's last message is newer than the latest observed user message.
+
+        Chat memory holds only turns the bot took part in, so memory.last_sender_is_bot
+        is not enough here; the bot's last-message time is compared with the DB's latest
+        user message instead. Short messages the observe block does not save are not
+        seen, so the guard errs on the side of staying quiet. After a restart the bot time
+        is seeded from the restored chat memory (see MemoryManager._load).
+        """
+        bot_at = memory.last_bot_message_at(chat_id)
+        return bool(bot_at) and bot_at >= get_latest_message_timestamp(chat_id)
 
     def _init_chat(self, chat_id: int):
         if chat_id not in self._state:

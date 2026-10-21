@@ -30,3 +30,6 @@ requirements-dev.txt
 # Docs / misc
 *.md
 .github/
+
+# Persona files must ship in the image (explicit, in case the *.md rule above is widened)
+!personas/*.md

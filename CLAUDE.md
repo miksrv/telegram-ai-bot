@@ -11,7 +11,9 @@ VERSION                           # Running version, MAJOR.MINOR.PATCH (see "Ver
 CHANGELOG.md                      # Keep a Changelog history, one entry per release
 main.py                          # Entry point: starts MQTT + bot polling
 config/settings.py               # All configuration, loaded from .env; also reads VERSION into BOT_VERSION
+personas/                        # Persona files (tars.md, peasant.md): name, self-names, extra triggers, character/tone prompt text
 core/
+  persona.py                     # Persona dataclass + loader/parser; module-level `persona` is the active one (settings.PERSONA)
   brain.py                       # TARSBrain: builds prompts/context, memory/profile updates, post_proactively(); delegates the actual model call to core/llm
   llm/                           # Pluggable cloud LLM engine (see "LLM Engine" section below)
     engine.py                    # LLMEngine: picks the active provider from LLM_ENGINE, single .complete() entry point used by brain.py
@@ -19,10 +21,11 @@ core/
     groq_provider.py              # GroqProvider(LLMProvider)
     openai_provider.py            # OpenAIProvider(LLMProvider)
   memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot/get_user_earlier_messages helpers
-  prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
+  reactions.py                   # Keyword-driven emoji reactions (no LLM): match_keyword/pick_reaction/maybe_react, per-chat cooldown, allowed-emoji guard
+  prompts.py                     # Structural prompt templates (JSON contract, plain-text rules, user card) + builders, persona text injected (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
-  proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the once-daily direct reply
+  proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the direct replies (both skipped while the bot spoke last in the chat)
 database/
   db.py                          # SQLite: user_profile, chat_memory, user_memory, messages, image_generation_usage tables; all CRUD + memory persistence (flush_memory/load_memory)
   profile_repo.py                # Re-exports db.py functions used by brain.py
@@ -44,11 +47,17 @@ services/
   image_service.py                # OpenAI Images API client for /image: generate_image() + its own exception hierarchy; always talks to OpenAI directly, independent of LLM_ENGINE
   startup_notifier.py            # send_startup_notification(): DMs every ADMIN_IDS user once at boot with allowed chats, active LLM engine/model, MQTT status, proactive status
 utils/
-  triggers.py                    # Trigger word detection + is_reply_to_bot
+  triggers.py                    # Trigger word detection (тарс/tars + the active persona's triggers) + is_reply_to_bot
   identity.py                    # Extracts Telegram user identity dict from message
   photo.py                       # Extracts photo URL from Telegram message
   typing_action.py               # typing_action() context manager: keeps the "typing..." indicator alive (refreshed every few seconds) for the duration of a slow call
 ```
+
+## Persona
+
+Who the bot is lives in `personas/<name>.md`, not in code; `settings.PERSONA` (default `peasant`; `tars` is the original robot) picks the file and an unknown name raises `RuntimeError` at import, like `LLM_ENGINE`. `core/persona.py` parses it once into the module-level `persona` (frozen dataclass). **File format:** `key: value` header lines (`name`, `self_names` — comma-separated, `*` = any ending, `triggers` — comma-separated lowercase stems) up to a line holding only `---`, then prompt text in required `## identity`, `## style` (tone bullets), `## humor` (one sentence; the only place for humor, do not repeat it in `## style`) and `## proactive_character` (one line) sections; text before the first `## ` heading is a comment. CRLF line endings and a UTF-8 BOM are normalized before parsing. `list_personas()` lives in `config/settings.py` (it validates `PERSONA` at import, and `core/persona.py` imports settings). **What stays in code** (`core/prompts.py`, shared by all personas): the JSON response contract, plain-text/no-markdown rules, honesty rules, personalization rule, capabilities line, profile/notes/facts rules, and the proactive-prompt skeleton. The persona text is passed to `str.format` as values (`_persona_fields()`), so braces in a persona file are harmless.
+
+**Self-identity and triggers.** The self-identity rule lists the persona's `self_names` followed by the base `"ТАРС"/"TARS"/"Тарс*"` (always included, deduplicated), so both names mean the bot, including third-person mentions. `utils/triggers.py` builds `TRIGGERS` from the base stems `тарс`/`tars` plus `persona.triggers`, so the bot answers to TARS and to the persona's own name (peasant: `микул`, matching Микула/Микулу/Микулушка). `memory.get_chat_context` labels assistant turns with `persona.name`. Fixed bot-facing Russian strings (`LLM_FAILURE_REPLY`, command replies, `/help`) are not persona-driven. **To add a persona:** copy `personas/tars.md`, edit it, set `PERSONA` to the file name.
 
 ## LLM Engine
 
@@ -79,14 +88,14 @@ Both conversational system-prompt templates (and, cheaply, the two proactive tem
 
 ### Proactive posting (background)
 1. `background_service.start_proactive_loop` wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS`
-2. For each `PROACTIVE_CHAT_IDS` chat: `proactive_engine.should_post()` checks, in order: scheduled `next_attempt_at`, daily cap (`PROACTIVE_MAX_PER_DAY`, resets at UTC midnight), min gap, enough context rows in DB, and that there is at least one new user message since the last proactive post
+2. For each `PROACTIVE_CHAT_IDS` chat: `proactive_engine.should_post()` checks, in order: scheduled `next_attempt_at`, daily cap (`PROACTIVE_MAX_PER_DAY`, resets at UTC midnight), min gap, enough context rows in DB, that there is at least one new user message since the last proactive post, and that the bot did not speak last (`ProactiveEngine._bot_spoke_last`: `memory.last_bot_message_at(chat)` is not older than `db.get_latest_message_timestamp(chat)`; chat memory only holds turns the bot took part in, so `memory.last_sender_is_bot` alone cannot tell whether humans have talked since; the bot-message time is not persisted itself, but `MemoryManager._load` seeds it from the restored history's `last_access` when the chat's last turn is the bot's, so the guard survives a restart)
 3. On approval: `brain.post_proactively()` fetches recent messages → the active LLM engine → JSON `{reply}`
 4. On success: `bot.send_message()` sends; `memory.add_bot_message()` records the post as a standalone assistant turn in chat memory (so follow-ups/replies have context); `proactive_engine.record_post()` advances schedule (random `PROACTIVE_NEXT_MIN/MAX_SECONDS` window)
 5. On failure (no content or exception): `proactive_engine.reschedule_failed()` pushes `next_attempt_at` forward without consuming the daily budget
 
-### Proactive direct reply (background, once daily)
-Gated by its own master toggle, `PROACTIVE_REPLY_ENABLED` (default `true`) — checked in `background_service.start_proactive_loop` before `should_post_reply()` is even called. In addition to the general posts above, the same loop iteration (when a general post did not fire) can address one specific past message directly, as a Telegram reply.
-1. `proactive_engine.should_post_reply()` checks its own schedule (`next_reply_attempt_at`, randomized once per UTC day within `PROACTIVE_REPLY_MIN/MAX_DELAY_SECONDS` of midnight), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`, default 1), and the shared `PROACTIVE_MIN_GAP_SECONDS` gap against the last proactive action (post or reply)
+### Proactive direct reply (background, daily budget)
+Gated by its own master toggle, `PROACTIVE_REPLY_ENABLED` (default `true`) — checked in `background_service.start_proactive_loop` before `should_post_reply()` is even called. In addition to the general posts above, the same loop iteration (when a general post did not fire) can address one specific past message directly, as a Telegram reply, up to `PROACTIVE_REPLY_MAX_PER_DAY` times per chat per day.
+1. `proactive_engine.should_post_reply()` checks its own schedule (`next_reply_attempt_at`, randomized once per UTC day within `PROACTIVE_REPLY_MIN/MAX_DELAY_SECONDS` of midnight for the first reply, then re-rolled within `PROACTIVE_NEXT_MIN/MAX_SECONDS` after each subsequent reply until the cap is hit), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`, default 4), the shared `PROACTIVE_MIN_GAP_SECONDS` gap against the last proactive action (post or reply), and the same "bot did not speak last" guard as general posts
 2. Target selection is pure SQL/Python, not an LLM call: `database.db.get_reply_candidate()` picks a random message from the `messages` table with `word_count >= PROACTIVE_REPLY_MIN_WORD_COUNT` (screens out short, e.g. two-word, messages) and `replied_at = 0` (never used before). Photo messages never qualify — the observe block only ever saves `content_type == "text"` rows, so nothing with an image is in the table to begin with
 3. On a candidate: `brain.post_proactive_reply()` fetches recent context, builds a prompt naming the target author/text, and makes a single call to the active LLM engine → JSON `{reply}`
 4. On success: `bot.send_message(..., reply_to_message_id=...)` sends it as a genuine Telegram reply to the target; `memory.add_bot_message()` records it in chat memory; `database.db.mark_message_replied()` flags the target row so it is never picked again; `proactive_engine.record_reply()` consumes the daily budget
@@ -107,6 +116,9 @@ Integration with the separate **starmap-service** repo (its `API.md` is the shar
 5. **Dynamic command menu:** `mqtt_service` subscribes to the retained `starmap/status` topic and tracks online/offline; `telegram_service` registers a status listener that rebuilds `set_my_commands` so the four chart commands appear in the Telegram `/` menu only while the service is online (and disappear via the service's Last Will when it dies)
 
 > Gap noted in the service: `map_type: optic` (object through a given optic) requires explicit `target.ra`/`target.dec`; resolving an object name (e.g. `M31`) to coordinates is not implemented server-side, so no `/optic`-style command is exposed yet.
+
+### Message reactions (no LLM)
+In `handlers/message_handler.py`, right after the observe block (and before the trigger/cooldown gate), `core.reactions.maybe_react(bot, message)` runs for text messages in an allowed, non-private chat that are not from a bot, not commands, and not addressed to the bot (no trigger word, not a reply to the bot — the bot answers those instead of reacting). `maybe_react` returns early if `REACTIONS_ENABLED` is false or the per-chat cooldown (`REACTIONS_MIN_GAP_SECONDS`) has not elapsed; then `pick_reaction` does keyword matching on the lowercased text (`_KEYWORD_PATTERNS`: ~17 emoji groups, ~190 Russian/English patterns, matched at word start, first group wins) and rolls `REACTIONS_KEYWORD_PROBABILITY`; with no keyword match it rolls the much smaller `REACTIONS_RANDOM_PROBABILITY` and picks from `RANDOM_REACTIONS` (👍 🔥 🤔 👀). The chosen emoji must be in `ALLOWED_REACTION_EMOJI` (Telegram's fixed list for bots; a test checks every emoji we use against it), then `bot.set_message_reaction(chat_id, message_id, [types.ReactionTypeEmoji(emoji)])` is called (pyTelegramBotAPI 4.15.4 supports it). The cooldown slot is claimed before the call; any exception is logged and swallowed, so message handling never breaks. State (cooldowns) is in RAM only.
 
 ### CubeSat photo (/photo)
 1. `photo_handler.handle_photo` → registers a per-request queue (keyed by `request_id`) → publishes `{"command": "take_photo", "request_id": ..., "params": {"overlay": ...}}` to `cubesat/command`
@@ -132,11 +144,24 @@ ALLOWED_CHAT_IDS=   # Comma-separated Telegram chat IDs
 ADMIN_IDS=          # Comma-separated Telegram user IDs (admins)
 ```
 
+Persona selection:
+```env
+PERSONA=         # personas/<name>.md to use: "peasant" (Микула, default) or "tars"
+```
+
 LLM engine selection — only the key for the active engine is required (see "LLM Engine" above):
 ```env
 LLM_ENGINE=      # "groq" or "openai" (default: groq)
 GROQ_API_KEY=    # Required when LLM_ENGINE=groq
 OPENAI_API_KEY=  # Required when LLM_ENGINE=openai
+```
+
+Optional message reaction variables (see `.env.example`):
+```env
+REACTIONS_ENABLED=                # Master toggle (default: true)
+REACTIONS_KEYWORD_PROBABILITY=    # Chance to react when a keyword matches (default: 0.15)
+REACTIONS_RANDOM_PROBABILITY=     # Chance of a random reaction to unmatched messages (default: 0.02)
+REACTIONS_MIN_GAP_SECONDS=        # Per-chat minimum gap between reactions (default: 600)
 ```
 
 Optional proactive engagement variables (see `.env.example` for the full list):
@@ -151,7 +176,7 @@ LOG_LEVEL=                  # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
 STARMAP_MAX_WAIT=           # Seconds to wait for a finished star chart (default: 120)
 STARMAP_IMAGE_DIR=          # Shared dir for chart files; image_path is validated against it (default: unset → base64 only)
 STARMAP_DELETE_AFTER_SEND=  # Delete the delivered chart file from STARMAP_IMAGE_DIR after sending (default: false)
-PROACTIVE_REPLY_ENABLED=    # Master toggle for the once-daily direct reply feature (default: true)
+PROACTIVE_REPLY_ENABLED=    # Master toggle for the direct reply feature (default: true)
 GROQ_MODEL_TEXT=            # Override Groq's text model (default: llama-3.3-70b-versatile)
 GROQ_MODEL_VISION=          # Override Groq's vision model (default: meta-llama/llama-4-scout-17b-16e-instruct)
 OPENAI_MODEL_TEXT=          # Override OpenAI's text model (default: gpt-4o-mini)

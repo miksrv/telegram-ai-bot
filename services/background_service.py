@@ -46,7 +46,7 @@ def start_cleanup_loop(interval_seconds: int) -> threading.Thread:
 
 
 def _try_proactive_reply(bot, engine, chat_id: int, candidate: dict):
-    """Generates and sends the once-daily direct reply to `candidate`, a message
+    """Generates and sends a direct reply to `candidate`, a message
     dict from ProactiveEngine.should_post_reply (id, telegram_message_id,
     first_name, username, text). Isolated in its own try/except so a failure
     reschedules via reschedule_reply_failed, not the general post's reschedule_failed.

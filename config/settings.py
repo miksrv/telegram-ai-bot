@@ -63,6 +63,30 @@ OPENAI_MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")
 OPENAI_MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o-mini")
 
 # --------------------------------------------------
+# Persona
+# --------------------------------------------------
+# Which personas/<name>.md file defines the bot's name, character and tone
+# (see core/persona.py). An unknown name fails at startup, like LLM_ENGINE.
+
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+PERSONAS_DIR = os.path.join(BASE_DIR, "personas")
+PERSONA = os.getenv("PERSONA", "peasant").strip().lower()
+
+
+def list_personas(directory: str = PERSONAS_DIR) -> list:
+    """Keys (file names without .md) of the persona files in `directory`; empty if it is missing.
+    Lives here, not in core/persona.py, because that module imports this one."""
+    try:
+        return sorted(f[:-3] for f in os.listdir(directory) if f.endswith(".md"))
+    except OSError:
+        return []
+
+
+_available_personas = list_personas()
+if PERSONA not in _available_personas:
+    raise RuntimeError(f"Unknown PERSONA '{PERSONA}', available: {', '.join(_available_personas) or 'none'}")
+
+# --------------------------------------------------
 # Image generation (/image)
 # --------------------------------------------------
 # Always goes straight to OpenAI's Images API regardless of LLM_ENGINE — this
@@ -156,8 +180,6 @@ STARMAP_DELETE_AFTER_SEND = os.getenv("STARMAP_DELETE_AFTER_SEND", "false").lowe
 # Database
 # --------------------------------------------------
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-
 DB_PATH = os.path.join(BASE_DIR, "data", "tars_user_profiles.db")
 
 # --------------------------------------------------
@@ -194,7 +216,7 @@ PROACTIVE_CHAT_IDS = _proactive_parsed & ALLOWED_CHAT_IDS
 _dropped = _proactive_parsed - ALLOWED_CHAT_IDS
 if _dropped:
     logging.warning("Proactive chat IDs not in ALLOWED_CHAT_IDS (ignored): %s", _dropped)
-PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "5"))
+PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "2"))
 PROACTIVE_MIN_GAP_SECONDS = int(os.getenv("PROACTIVE_MIN_GAP_SECONDS", "3600"))
 PROACTIVE_NEXT_MIN_SECONDS = int(os.getenv("PROACTIVE_NEXT_MIN_SECONDS", "7200"))
 PROACTIVE_NEXT_MAX_SECONDS = int(os.getenv("PROACTIVE_NEXT_MAX_SECONDS", "14400"))
@@ -203,18 +225,31 @@ PROACTIVE_MIN_CONTEXT_MESSAGES = int(os.getenv("PROACTIVE_MIN_CONTEXT_MESSAGES",
 PROACTIVE_MIN_WORD_COUNT = int(os.getenv("PROACTIVE_MIN_WORD_COUNT", "3"))
 PROACTIVE_MIN_CHAR_COUNT = int(os.getenv("PROACTIVE_MIN_CHAR_COUNT", "15"))
 
-# Once-daily direct reply to a specific past message (in addition to the
-# general proactive posts above). Target selection happens in Python/SQL, not
+# Direct replies to specific past messages (in addition to the general
+# proactive posts above), up to PROACTIVE_REPLY_MAX_PER_DAY per chat per day. Target selection happens in Python/SQL, not
 # via the LLM, so only one API call (the reply itself) is ever spent on it.
 PROACTIVE_REPLY_ENABLED = os.getenv("PROACTIVE_REPLY_ENABLED", "true").lower() == "true"
-PROACTIVE_REPLY_MAX_PER_DAY = int(os.getenv("PROACTIVE_REPLY_MAX_PER_DAY", "1"))
+PROACTIVE_REPLY_MAX_PER_DAY = int(os.getenv("PROACTIVE_REPLY_MAX_PER_DAY", "4"))
 # Minimum word count for a message to qualify as a reply target — deliberately
 # higher than PROACTIVE_MIN_WORD_COUNT so a two-word message is never picked.
 PROACTIVE_REPLY_MIN_WORD_COUNT = int(os.getenv("PROACTIVE_REPLY_MIN_WORD_COUNT", "8"))
-# Random delay window (from UTC midnight) before the daily reply becomes
+# Random delay window (from UTC midnight) before the day's first reply becomes
 # eligible to fire, so it doesn't always land right after the day resets.
+# Later replies the same day are spaced by PROACTIVE_NEXT_MIN/MAX_SECONDS.
 PROACTIVE_REPLY_MIN_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MIN_DELAY_SECONDS", "3600"))
 PROACTIVE_REPLY_MAX_DELAY_SECONDS = int(os.getenv("PROACTIVE_REPLY_MAX_DELAY_SECONDS", "43200"))
+
+# --------------------------------------------------
+# Message reactions (no LLM)
+# --------------------------------------------------
+# The bot occasionally reacts to ordinary chat messages with an emoji, chosen by
+# keyword matching (core/reactions.py). Master toggle, probabilities and a
+# per-chat minimum gap keep it rare.
+
+REACTIONS_ENABLED = os.getenv("REACTIONS_ENABLED", "true").lower() == "true"
+REACTIONS_KEYWORD_PROBABILITY = float(os.getenv("REACTIONS_KEYWORD_PROBABILITY", "0.15"))
+REACTIONS_RANDOM_PROBABILITY = float(os.getenv("REACTIONS_RANDOM_PROBABILITY", "0.02"))
+REACTIONS_MIN_GAP_SECONDS = int(os.getenv("REACTIONS_MIN_GAP_SECONDS", "600"))
 
 MESSAGE_TTL_SECONDS = int(os.getenv("MESSAGE_TTL_SECONDS", "86400"))
 CLEANUP_LOOP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_LOOP_INTERVAL_SECONDS", "1800"))

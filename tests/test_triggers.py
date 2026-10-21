@@ -73,3 +73,9 @@ def test_latin_inflected():
 def test_inflected_not_matched_as_substring():
     # The stem must start a word — a stem in the middle of a word must not match.
     assert is_calling_tars("контарса нет такого слова") is False
+
+
+def test_active_persona_name_triggers_with_inflections():
+    # conftest pins PERSONA=peasant, whose file declares the "микул" stem
+    assert is_calling_tars("Микула, что там на небе?") is True
+    assert is_calling_tars("спроси у микулы") is True

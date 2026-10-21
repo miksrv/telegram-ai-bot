@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-10-21
+
+### Added
+
+- Swappable bot persona: the name, character, tone, self-identity names and
+  extra trigger words moved out of `core/prompts.py` into `personas/<name>.md`
+  files, selected with the new `PERSONA` setting (an unknown name fails at
+  startup). Structural prompt rules (JSON contract, plain text, user card,
+  capabilities, profile updates) stay in code and apply to every persona.
+  `tars` reproduces the previous behavior; the new `peasant` persona (Микула, a
+  peasant from ancient Rus' who speaks stylized Old Russian and is amazed by
+  modern things) is the new default. The bot still answers to "тарс"/"tars"
+  and, additionally, to the active persona's own name; both names are declared
+  as referring to the bot in the self-identity rule.
+- Keyword-based emoji reactions to ordinary chat messages, without any LLM
+  call (`core/reactions.py`): `REACTIONS_ENABLED`,
+  `REACTIONS_KEYWORD_PROBABILITY` (0.15), `REACTIONS_RANDOM_PROBABILITY`
+  (0.02, only for messages with no keyword match) and a per-chat
+  `REACTIONS_MIN_GAP_SECONDS` (600). Only emoji Telegram allows for bot
+  reactions are used; messages the bot answers anyway are skipped.
+
+### Changed
+
+- `PROACTIVE_MAX_PER_DAY` default 5 -> 2.
+- `PROACTIVE_REPLY_MAX_PER_DAY` default 1 -> 4.
+- Proactive posts and direct replies are skipped while the bot's own message is
+  newer than the latest observed user message, so the bot no longer talks to
+  itself in a quiet chat. The guard also holds right after a restart: the
+  bot's last-message time is restored from the persisted chat memory.
+
+### Fixed
+
+- After a direct reply the next one was always parked until the next UTC day,
+  as if the daily cap were 1. It is now scheduled later the same day
+  (`PROACTIVE_NEXT_MIN/MAX_SECONDS`) while budget remains.
+
 ## [1.1.0] - 2026-10-10
 
 ### Added
