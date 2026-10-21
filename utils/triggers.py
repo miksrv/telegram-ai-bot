@@ -8,11 +8,15 @@ from typing import Set
 
 from telebot import TeleBot, types
 
+from core.persona import persona
+
 # Trigger word stems (can be expanded via add_trigger).
 # Matching is case-insensitive and also fires on inflected forms — the stem
 # must start a word, but any trailing letters are allowed, so "тарса", "тарсу",
 # "тарсом", "тарсик" all match while substrings like "tartars" do not.
-TRIGGERS = {"тарс", "tars"}
+# The original TARS stems always work; the active persona may declare more
+# (e.g. its own name) in its file header.
+TRIGGERS = {"тарс", "tars", *persona.triggers}
 
 
 def _compile(triggers: Set[str]) -> "re.Pattern":

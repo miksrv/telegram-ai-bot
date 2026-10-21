@@ -8,6 +8,7 @@ from config.settings import (
     MEMORY_LIMIT,
     MEMORY_TTL_SECONDS,
 )
+from core.persona import persona
 from database.db import flush_memory, load_memory
 
 ChatHistoryEntry = Tuple[int, str, str]  # (user_id, role, text)
@@ -55,7 +56,7 @@ class MemoryManager:
 
         lines = []
         for user_id, role, text in snapshot:
-            speaker = f"User#{user_id}" if role == "user" else "TARS"
+            speaker = f"User#{user_id}" if role == "user" else persona.name
             lines.append(f"{speaker}: {text}")
 
         return "\n".join(lines)

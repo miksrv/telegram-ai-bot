@@ -26,6 +26,9 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 # functions directly and don't depend on this flag.
 os.environ.setdefault("IMAGE_GEN_ENABLED", "false")
 
+# Pin the persona so a developer's local .env cannot change prompt/trigger assertions.
+os.environ.setdefault("PERSONA", "peasant")
+
 # Stub out telebot if the package is not installed (e.g. running tests without
 # the full venv). In CI requirements.txt is installed so the real package is used.
 if "telebot" not in sys.modules:

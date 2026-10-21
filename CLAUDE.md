@@ -11,7 +11,9 @@ VERSION                           # Running version, MAJOR.MINOR.PATCH (see "Ver
 CHANGELOG.md                      # Keep a Changelog history, one entry per release
 main.py                          # Entry point: starts MQTT + bot polling
 config/settings.py               # All configuration, loaded from .env; also reads VERSION into BOT_VERSION
+personas/                        # Persona files (tars.md, peasant.md): name, self-names, extra triggers, character/tone prompt text
 core/
+  persona.py                     # Persona dataclass + loader/parser; module-level `persona` is the active one (settings.PERSONA)
   brain.py                       # TARSBrain: builds prompts/context, memory/profile updates, post_proactively(); delegates the actual model call to core/llm
   llm/                           # Pluggable cloud LLM engine (see "LLM Engine" section below)
     engine.py                    # LLMEngine: picks the active provider from LLM_ENGINE, single .complete() entry point used by brain.py
@@ -19,7 +21,7 @@ core/
     groq_provider.py              # GroqProvider(LLMProvider)
     openai_provider.py            # OpenAIProvider(LLMProvider)
   memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot/get_user_earlier_messages helpers
-  prompts.py                     # System prompt templates and builders (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
+  prompts.py                     # Structural prompt templates (JSON contract, plain-text rules, user card) + builders, persona text injected (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
   personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives)
   cooldown.py                    # CooldownManager: sliding window rate limiter
   proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the once-daily direct reply
@@ -44,11 +46,17 @@ services/
   image_service.py                # OpenAI Images API client for /image: generate_image() + its own exception hierarchy; always talks to OpenAI directly, independent of LLM_ENGINE
   startup_notifier.py            # send_startup_notification(): DMs every ADMIN_IDS user once at boot with allowed chats, active LLM engine/model, MQTT status, proactive status
 utils/
-  triggers.py                    # Trigger word detection + is_reply_to_bot
+  triggers.py                    # Trigger word detection (тарс/tars + the active persona's triggers) + is_reply_to_bot
   identity.py                    # Extracts Telegram user identity dict from message
   photo.py                       # Extracts photo URL from Telegram message
   typing_action.py               # typing_action() context manager: keeps the "typing..." indicator alive (refreshed every few seconds) for the duration of a slow call
 ```
+
+## Persona
+
+Who the bot is lives in `personas/<name>.md`, not in code; `settings.PERSONA` (default `peasant`; `tars` is the original robot) picks the file and an unknown name raises `RuntimeError` at import, like `LLM_ENGINE`. `core/persona.py` parses it once into the module-level `persona` (frozen dataclass). **File format:** `key: value` header lines (`name`, `self_names` — comma-separated, `*` = any ending, `triggers` — comma-separated lowercase stems) up to a line holding only `---`, then prompt text in required `## identity`, `## style` (tone bullets), `## humor` (one sentence) and `## proactive_character` (one line) sections; text before the first `## ` heading is a comment. **What stays in code** (`core/prompts.py`, shared by all personas): the JSON response contract, plain-text/no-markdown rules, honesty rules, personalization rule, capabilities line, profile/notes/facts rules, and the proactive-prompt skeleton. The persona text is passed to `str.format` as values (`_persona_fields()`), so braces in a persona file are harmless.
+
+**Self-identity and triggers.** The self-identity rule lists the persona's `self_names` followed by the base `"ТАРС"/"TARS"/"Тарс*"` (always included, deduplicated), so both names mean the bot, including third-person mentions. `utils/triggers.py` builds `TRIGGERS` from the base stems `тарс`/`tars` plus `persona.triggers`, so the bot answers to TARS and to the persona's own name (peasant: `микул`, matching Микула/Микулу/Микулушка). `memory.get_chat_context` labels assistant turns with `persona.name`. Fixed bot-facing Russian strings (`LLM_FAILURE_REPLY`, command replies, `/help`) are not persona-driven. **To add a persona:** copy `personas/tars.md`, edit it, set `PERSONA` to the file name.
 
 ## LLM Engine
 
@@ -130,6 +138,11 @@ BOT_TOKEN=          # Telegram bot token
 WEATHER_API_KEY=    # OpenWeatherMap API key
 ALLOWED_CHAT_IDS=   # Comma-separated Telegram chat IDs
 ADMIN_IDS=          # Comma-separated Telegram user IDs (admins)
+```
+
+Persona selection:
+```env
+PERSONA=         # personas/<name>.md to use: "peasant" (Микула, default) or "tars"
 ```
 
 LLM engine selection — only the key for the active engine is required (see "LLM Engine" above):

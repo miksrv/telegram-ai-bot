@@ -63,6 +63,30 @@ OPENAI_MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")
 OPENAI_MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o-mini")
 
 # --------------------------------------------------
+# Persona
+# --------------------------------------------------
+# Which personas/<name>.md file defines the bot's name, character and tone
+# (see core/persona.py). An unknown name fails at startup, like LLM_ENGINE.
+
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+PERSONAS_DIR = os.path.join(BASE_DIR, "personas")
+PERSONA = os.getenv("PERSONA", "peasant").strip().lower()
+
+
+def list_personas(directory: str = PERSONAS_DIR) -> list:
+    """Keys (file names without .md) of the persona files in `directory`; empty if it is missing.
+    Lives here, not in core/persona.py, because that module imports this one."""
+    try:
+        return sorted(f[:-3] for f in os.listdir(directory) if f.endswith(".md"))
+    except OSError:
+        return []
+
+
+_available_personas = list_personas()
+if PERSONA not in _available_personas:
+    raise RuntimeError(f"Unknown PERSONA '{PERSONA}', available: {', '.join(_available_personas) or 'none'}")
+
+# --------------------------------------------------
 # Image generation (/image)
 # --------------------------------------------------
 # Always goes straight to OpenAI's Images API regardless of LLM_ENGINE — this
@@ -155,8 +179,6 @@ STARMAP_DELETE_AFTER_SEND = os.getenv("STARMAP_DELETE_AFTER_SEND", "false").lowe
 # --------------------------------------------------
 # Database
 # --------------------------------------------------
-
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 DB_PATH = os.path.join(BASE_DIR, "data", "tars_user_profiles.db")
 

@@ -25,9 +25,10 @@ Both services are optional — the bot starts and runs normally without them; th
 
 ## Features
 
-- **Conversational AI** - responds to mentions ("tars", "TARS", "тарс") and direct replies in group chats; uses a pluggable LLM engine (Groq's LLaMA models or OpenAI's ChatGPT models, switchable via `LLM_ENGINE`) for text and vision
+- **Conversational AI** - responds to mentions ("tars", "TARS", "тарс", plus the active persona's name, e.g. "Микула") and direct replies in group chats; uses a pluggable LLM engine (Groq's LLaMA models or OpenAI's ChatGPT models, switchable via `LLM_ENGINE`) for text and vision
 - **Proactive engagement** - autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
 - **Proactive direct reply** - once per day, replies directly (as a genuine Telegram reply) to one specific past message picked at random by SQL/Python, not the LLM — spending only one API call on the reply text itself
+- **Swappable persona** - the bot's name, character and tone live in `personas/<name>.md` and are picked by `PERSONA` (`peasant` = Микула, a peasant from ancient Rus'; `tars` = the original robot). A persona can add its own trigger words
 - **Adaptive personality** - tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
 - **User profiles** - persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
 - **Image analysis** - analyzes photos posted in the chat with astronomical context awareness
@@ -48,7 +49,9 @@ telegram-ai-bot/
 ├── main.py                          # Entry point
 ├── config/
 │   └── settings.py                  # All configuration (loaded from .env)
+├── personas/                        # Persona files (name, character, tone, trigger words): tars.md, peasant.md
 ├── core/
+│   ├── persona.py                   # Loads the active persona file selected by PERSONA
 │   ├── brain.py                     # Builds prompts/context, memory/profile updates, proactive posting; delegates model calls to core/llm
 │   ├── llm/                         # Pluggable LLM engine
 │   │   ├── engine.py                # LLMEngine: picks the active provider from LLM_ENGINE
@@ -142,6 +145,14 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 | `WEATHER_API_KEY` | OpenWeatherMap API key |
 | `ALLOWED_CHAT_IDS` | Comma-separated list of authorized group chat IDs |
 | `ADMIN_IDS` | Comma-separated list of admin Telegram user IDs |
+
+### Persona (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PERSONA` | `peasant` | Which `personas/<name>.md` file defines the bot's name, character and tone: `peasant` (Микула) or `tars`. An unknown name fails at startup |
+
+A persona file is plain text: `key: value` header lines (`name`, `self_names`, `triggers`) up to a `---` line, then prompt text in `## identity`, `## style`, `## humor` and `## proactive_character` sections. Structural rules (JSON contract, plain text, user card, capabilities) stay in `core/prompts.py` for every persona. The bot always answers to "тарс"/"tars" and, in addition, to the active persona's `triggers` (for `peasant`: "Микула"). To add a persona, copy `personas/tars.md`, edit it and set `PERSONA` to its file name.
 
 ### LLM Engine
 
