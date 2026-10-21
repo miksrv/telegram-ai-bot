@@ -1,5 +1,5 @@
 """
-ProactiveEngine — per-chat state machine governing when TARS posts proactively.
+ProactiveEngine — per-chat state machine governing when the bot posts proactively.
 
 State resets on restart (the daily cap is a UX constraint, not a safety invariant).
 Besides the general proactive posts, the engine also governs direct replies to
@@ -182,7 +182,8 @@ class ProactiveEngine:
         Chat memory holds only turns the bot took part in, so memory.last_sender_is_bot
         is not enough here; the bot's last-message time is compared with the DB's latest
         user message instead. Short messages the observe block does not save are not
-        seen, so the guard errs on the side of staying quiet. Unknown after a restart (0).
+        seen, so the guard errs on the side of staying quiet. After a restart the bot time
+        is seeded from the restored chat memory (see MemoryManager._load).
         """
         bot_at = memory.last_bot_message_at(chat_id)
         return bool(bot_at) and bot_at >= get_latest_message_timestamp(chat_id)

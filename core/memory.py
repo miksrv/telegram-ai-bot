@@ -29,8 +29,9 @@ class MemoryManager:
     def __init__(self):
         self._lock = threading.Lock()
         self.chat_storage: Dict[int, Dict] = {}
-        # Unix time of the bot's last message per chat. RAM only (not persisted): after a
-        # restart it is unknown (0), which the proactive "bot spoke last" guard treats as "no".
+        # Unix time of the bot's last message per chat. Not persisted on its own: _load
+        # seeds it from the restored history so the proactive "bot spoke last" guard
+        # survives a restart; 0 (unknown) is treated as "no".
         self._last_bot_at: Dict[int, float] = {}
         self._load()
 
@@ -42,6 +43,10 @@ class MemoryManager:
                 "last_access": data["last_access"],
                 "history": deque(data["history"], maxlen=MEMORY_LIMIT),
             }
+            # last_access is the closest saved time to that last bot turn (it can only be later,
+            # which errs on the side of the guard keeping the bot quiet until the next user message).
+            if data["history"] and data["history"][-1][1] == "assistant":
+                self._last_bot_at[chat_id] = float(data["last_access"])
 
     # ==================================================
     # CHAT CONTEXT
@@ -135,7 +140,7 @@ class MemoryManager:
         return texts[-limit:]
 
     def last_bot_message_at(self, chat_id: int) -> float:
-        """Unix time of the bot's last message in the chat since startup, 0 if none.
+        """Unix time of the bot's last message in the chat, 0 if unknown.
 
         Unlike last_sender_is_bot, this can be compared with the timestamp of the
         latest observed user message: chat memory only holds turns the bot took part

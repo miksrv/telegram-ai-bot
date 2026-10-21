@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PROACTIVE_REPLY_MAX_PER_DAY` default 1 -> 4.
 - Proactive posts and direct replies are skipped while the bot's own message is
   newer than the latest observed user message, so the bot no longer talks to
-  itself in a quiet chat.
+  itself in a quiet chat. The guard also holds right after a restart: the
+  bot's last-message time is restored from the persisted chat memory.
 
 ### Fixed
 

@@ -1,7 +1,8 @@
 import pytest
 
 import core.prompts as prompts_mod
-from core.persona import list_personas, load_persona, parse_persona
+from config.settings import list_personas
+from core.persona import load_persona, parse_persona
 from core.prompts import build_general_system_prompt, build_proactive_prompt, build_proactive_reply_prompt
 
 VALID = """name: Бот
@@ -27,6 +28,13 @@ def test_parse_persona_reads_header_and_sections():
     assert p.triggers == ("бот", "ботяра")
     assert p.identity == "You are a bot {with braces}."
     assert p.style == "- Be brief."
+
+
+def test_parse_persona_accepts_crlf_and_bom():
+    p = parse_persona("bot", "\ufeff" + VALID.replace("\n", "\r\n"))
+    assert p.name == "Бот"
+    assert p.style == "- Be brief."
+    assert "\r" not in p.identity
 
 
 def test_parse_persona_rejects_missing_separator():

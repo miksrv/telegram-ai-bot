@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from config.settings import PERSONA, PERSONAS_DIR
-from config.settings import list_personas as _list_personas
 
 REQUIRED_SECTIONS = ("identity", "style", "humor", "proactive_character")
 
@@ -54,6 +53,8 @@ def _split_csv(raw: str) -> Tuple[str, ...]:
 
 def parse_persona(key: str, text: str) -> Persona:
     """Parses persona file text. Raises ValueError when malformed."""
+    # Files edited on Windows may carry CRLF (or a BOM); the separator and headings expect "\n".
+    text = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     head, sep, body = text.partition("\n---\n")
     if not sep:
         raise ValueError(f"persona '{key}': missing '---' line after the header")
@@ -85,11 +86,6 @@ def parse_persona(key: str, text: str) -> Persona:
         triggers=tuple(t.lower() for t in _split_csv(header.get("triggers", ""))),
         **text_of,
     )
-
-
-def list_personas(directory: str = PERSONAS_DIR) -> List[str]:
-    """Keys (file names without .md) of every persona file available."""
-    return _list_personas(directory)
 
 
 def load_persona(key: str, directory: str = PERSONAS_DIR) -> Persona:
