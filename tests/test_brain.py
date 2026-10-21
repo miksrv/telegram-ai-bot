@@ -259,7 +259,7 @@ def test_process_llm_response_returns_reply_when_present(monkeypatch):
 
 
 # --------------------------------------------------
-# post_proactive_reply — once-daily direct reply to a specific message
+# post_proactive_reply — direct reply to a specific message
 # --------------------------------------------------
 
 

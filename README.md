@@ -27,7 +27,7 @@ Both services are optional — the bot starts and runs normally without them; th
 
 - **Conversational AI** - responds to mentions ("tars", "TARS", "тарс", plus the active persona's name, e.g. "Микула") and direct replies in group chats; uses a pluggable LLM engine (Groq's LLaMA models or OpenAI's ChatGPT models, switchable via `LLM_ENGINE`) for text and vision
 - **Proactive engagement** - autonomously observes chat activity and posts spontaneous, context-aware messages on a scheduled cadence (daily cap, configurable timing, no user trigger required)
-- **Proactive direct reply** - once per day, replies directly (as a genuine Telegram reply) to one specific past message picked at random by SQL/Python, not the LLM — spending only one API call on the reply text itself
+- **Proactive direct reply** - up to a few times per day (default 4), replies directly (as a genuine Telegram reply) to one specific past message picked at random by SQL/Python, not the LLM — spending only one API call on the reply text itself
 - **Swappable persona** - the bot's name, character and tone live in `personas/<name>.md` and are picked by `PERSONA` (`peasant` = Микула, a peasant from ancient Rus'; `tars` = the original robot). A persona can add its own trigger words
 - **Adaptive personality** - tracks per-user behavioral metrics (off-topic rate, rudeness, verbosity, etc.) and adjusts response style automatically
 - **User profiles** - persists interests, behavioral scores, and LLM-maintained notes per user in SQLite
@@ -180,7 +180,7 @@ To add a further provider (e.g. Anthropic, a local model server), add one file u
 |----------|---------|-------------|
 | `PROACTIVE_ENABLED` | `true` | Master toggle; set to `false` to disable the feature entirely |
 | `PROACTIVE_CHAT_IDS` | _(empty)_ | Comma-separated chat IDs to enroll for proactive observation and posting. Must be a subset of `ALLOWED_CHAT_IDS`. If empty, proactive posting is inactive even if enabled |
-| `PROACTIVE_MAX_PER_DAY` | `5` | Maximum proactive posts per chat per calendar day (UTC) |
+| `PROACTIVE_MAX_PER_DAY` | `2` | Maximum proactive posts per chat per calendar day (UTC) |
 | `PROACTIVE_MIN_GAP_SECONDS` | `3600` | Minimum seconds between two consecutive proactive posts (1 hour) |
 | `PROACTIVE_NEXT_MIN_SECONDS` | `7200` | Lower bound of the random reschedule window after a post (2 hours) |
 | `PROACTIVE_NEXT_MAX_SECONDS` | `14400` | Upper bound of the random reschedule window after a post (4 hours) |
@@ -188,10 +188,10 @@ To add a further provider (e.g. Anthropic, a local model server), add one file u
 | `PROACTIVE_MIN_CONTEXT_MESSAGES` | `10` | Minimum messages in DB before proactive posting activates for a chat |
 | `PROACTIVE_MIN_WORD_COUNT` | `3` | Minimum word count for a message to be saved for context |
 | `PROACTIVE_MIN_CHAR_COUNT` | `15` | Minimum character count (alternative to word count; OR logic) |
-| `PROACTIVE_REPLY_ENABLED` | `true` | Master toggle for the once-daily direct reply feature (independent of `PROACTIVE_ENABLED`) |
-| `PROACTIVE_REPLY_MAX_PER_DAY` | `1` | Maximum direct replies per chat per calendar day (UTC) |
+| `PROACTIVE_REPLY_ENABLED` | `true` | Master toggle for the direct reply feature (independent of `PROACTIVE_ENABLED`) |
+| `PROACTIVE_REPLY_MAX_PER_DAY` | `4` | Maximum direct replies per chat per calendar day (UTC) |
 | `PROACTIVE_REPLY_MIN_WORD_COUNT` | `8` | Minimum word count for a message to qualify as a reply target (deliberately higher than `PROACTIVE_MIN_WORD_COUNT` so short messages are never picked) |
-| `PROACTIVE_REPLY_MIN_DELAY_SECONDS` | `3600` | Lower bound of the random delay (from UTC midnight) before the daily reply becomes eligible |
+| `PROACTIVE_REPLY_MIN_DELAY_SECONDS` | `3600` | Lower bound of the random delay (from UTC midnight) before the first reply of the day becomes eligible (later replies are spaced by `PROACTIVE_NEXT_MIN/MAX_SECONDS`) |
 | `PROACTIVE_REPLY_MAX_DELAY_SECONDS` | `43200` | Upper bound of that delay window (default: 1–12 hours) |
 | `MESSAGE_TTL_SECONDS` | `86400` | How long a message is retained in the DB (24 hours) |
 | `CLEANUP_LOOP_INTERVAL_SECONDS` | `1800` | Cleanup daemon wake interval (30 minutes) |
@@ -254,7 +254,7 @@ When enabled, TARS passively observes text messages in enrolled chats and period
 
 1. Every qualifying message (text, non-command, ≥3 words or ≥15 characters) sent in a `PROACTIVE_CHAT_IDS` chat is stored in the `messages` table.
 2. A background daemon wakes every `PROACTIVE_LOOP_INTERVAL_SECONDS` and checks each enrolled chat.
-3. The chat is eligible only when **all** conditions hold: the per-chat schedule (`next_attempt_at`) has elapsed, the daily cap (`PROACTIVE_MAX_PER_DAY`, reset at UTC midnight) is not reached, the minimum gap has passed, there is enough context (≥ `PROACTIVE_MIN_CONTEXT_MESSAGES` rows), and at least one new user message has arrived since the last proactive post.
+3. The chat is eligible only when **all** conditions hold: the per-chat schedule (`next_attempt_at`) has elapsed, the daily cap (`PROACTIVE_MAX_PER_DAY`, reset at UTC midnight) is not reached, the minimum gap has passed, there is enough context (≥ `PROACTIVE_MIN_CONTEXT_MESSAGES` rows), at least one new user message has arrived since the last proactive post, and the bot did not itself speak last in the chat (replies are subject to the same last-speaker rule).
 4. On approval the LLM is called with the recent message history, and the generated reply is sent via `bot.send_message()`. The post is also recorded in chat memory (as a standalone assistant turn) so later replies/follow-ups have context, and the next attempt is scheduled in a random `PROACTIVE_NEXT_MIN_SECONDS`–`PROACTIVE_NEXT_MAX_SECONDS` window.
 5. If generation fails (no content or an error), the daily budget is preserved and the next attempt is simply pushed forward.
 
@@ -265,11 +265,11 @@ To activate, set at minimum:
 PROACTIVE_CHAT_IDS=-1001234567890
 ```
 
-### Once-daily direct reply
+### Direct replies
 
-Independently of the general posts above (gated by its own `PROACTIVE_REPLY_ENABLED` toggle, default `true`), the same background loop can — once per calendar day (UTC) per chat — reply directly to one specific past message, as a genuine Telegram reply:
+Independently of the general posts above (gated by its own `PROACTIVE_REPLY_ENABLED` toggle, default `true`), the same background loop can — up to `PROACTIVE_REPLY_MAX_PER_DAY` times per calendar day (UTC) per chat — reply directly to one specific past message, as a genuine Telegram reply:
 
-1. Each loop iteration, if a general post didn't fire, the engine checks its own schedule (`next_reply_attempt_at`, randomized once per day within `PROACTIVE_REPLY_MIN_DELAY_SECONDS`–`PROACTIVE_REPLY_MAX_DELAY_SECONDS` of UTC midnight), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`), and the same `PROACTIVE_MIN_GAP_SECONDS` gap shared with general posts.
+1. Each loop iteration, if a general post didn't fire, the engine checks its own schedule (`next_reply_attempt_at`, randomized once per day within `PROACTIVE_REPLY_MIN_DELAY_SECONDS`–`PROACTIVE_REPLY_MAX_DELAY_SECONDS` of UTC midnight for the first reply, then within `PROACTIVE_NEXT_MIN_SECONDS`–`PROACTIVE_NEXT_MAX_SECONDS` after each reply while budget remains), the daily cap (`PROACTIVE_REPLY_MAX_PER_DAY`), and the same `PROACTIVE_MIN_GAP_SECONDS` gap shared with general posts.
 2. The target message is picked by **plain SQL/Python, not the LLM** — a random row from the most recent qualifying messages in the `messages` table (`word_count >= PROACTIVE_REPLY_MIN_WORD_COUNT`, never used before). This means only a single LLM call (the reply text itself) is ever spent on this feature.
 3. On success, the reply is sent via `bot.send_message(..., reply_to_message_id=...)`, recorded in chat memory, and the target message is flagged so it's never picked again. On failure, the attempt is rescheduled without consuming the daily budget and the target is left unflagged.
 

@@ -29,6 +29,9 @@ class MemoryManager:
     def __init__(self):
         self._lock = threading.Lock()
         self.chat_storage: Dict[int, Dict] = {}
+        # Unix time of the bot's last message per chat. RAM only (not persisted): after a
+        # restart it is unknown (0), which the proactive "bot spoke last" guard treats as "no".
+        self._last_bot_at: Dict[int, float] = {}
         self._load()
 
     def _load(self):
@@ -91,6 +94,7 @@ class MemoryManager:
 
             store["history"].append((user_id, "user", user_msg))
             store["history"].append((user_id, "assistant", bot_reply))
+            self._last_bot_at[chat_id] = time.time()
 
     def add_bot_message(self, chat_id: int, text: str):
         """Records a standalone bot message (e.g. a proactive post) as an assistant turn.
@@ -108,6 +112,7 @@ class MemoryManager:
             store = self.chat_storage[chat_id]
             store["last_access"] = time.time()
             store["history"].append((0, "assistant", text))
+            self._last_bot_at[chat_id] = time.time()
 
     def get_user_earlier_messages(self, chat_id: int, user_id: int, limit: int) -> list:
         """Returns up to `limit` of this user's own user-turn texts from the chat's
@@ -128,6 +133,17 @@ class MemoryManager:
         older = history[:-MAX_CONTEXT_MESSAGES] if len(history) > MAX_CONTEXT_MESSAGES else []
         texts = [text for uid, role, text in older if uid == user_id and role == "user"]
         return texts[-limit:]
+
+    def last_bot_message_at(self, chat_id: int) -> float:
+        """Unix time of the bot's last message in the chat since startup, 0 if none.
+
+        Unlike last_sender_is_bot, this can be compared with the timestamp of the
+        latest observed user message: chat memory only holds turns the bot took part
+        in, so a human's plain chatter never lands there and "last entry is the bot"
+        alone would stay true while people keep talking.
+        """
+        with self._lock:
+            return self._last_bot_at.get(chat_id, 0.0)
 
     def last_sender_is_bot(self, chat_id: int) -> bool:
         """Returns True if the last recorded message in the chat was from the bot."""

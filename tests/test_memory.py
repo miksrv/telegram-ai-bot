@@ -120,3 +120,20 @@ def test_size_tracks_active_chats():
     mm.add_chat_memory(10, 1, "a", "b")
     mm.add_chat_memory(20, 1, "c", "d")
     assert mm.size()["chats"] == 2
+
+
+# --------------------------------------------------
+# last_bot_message_at
+# --------------------------------------------------
+
+
+def test_last_bot_message_at_unknown_chat_is_zero():
+    assert make_mm().last_bot_message_at(999) == 0
+
+
+def test_last_bot_message_at_set_by_reply_and_proactive_post():
+    mm = make_mm()
+    mm.add_chat_memory(1, 100, "hello", "hi")
+    assert mm.last_bot_message_at(1) > 0
+    mm.add_bot_message(2, "post")
+    assert mm.last_bot_message_at(2) > 0

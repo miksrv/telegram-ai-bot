@@ -560,7 +560,7 @@ def get_latest_message_timestamp(chat_id: int) -> int:
 
 def get_reply_candidate(chat_id: int, min_word_count: int, pool_size: int = 30) -> Optional[Dict[str, Any]]:
     """
-    Picks a message eligible for the once-daily proactive reply feature.
+    Picks a message eligible for the proactive direct reply feature.
 
     Selection is pure SQL/Python — no LLM call is spent choosing a target, so the
     single subsequent API call is spent entirely on generating the reply text.
@@ -601,7 +601,7 @@ def get_reply_candidate(chat_id: int, min_word_count: int, pool_size: int = 30) 
 
 
 def mark_message_replied(message_id: int):
-    """Marks a message as used for the once-daily proactive reply so it is never picked again."""
+    """Marks a message as used for a proactive direct reply so it is never picked again."""
     with get_connection() as conn:
         conn.execute("UPDATE messages SET replied_at = ? WHERE id = ?", (int(time.time()), message_id))
         conn.commit()
