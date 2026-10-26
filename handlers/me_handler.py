@@ -39,5 +39,5 @@ def handle_me(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
         with typing_action(bot, chat_id):
             reply = brain.describe_user(user_id, extract_telegram_identity(message))
         bot.reply_to(message, reply)
-    except Exception as e:
-        logging.error(f"/me error: {e}")
+    except Exception:
+        logging.exception("/me error")

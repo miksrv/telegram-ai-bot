@@ -61,7 +61,8 @@ def _init_db():
                 last_updated INTEGER,
                 avg_friendliness REAL DEFAULT 0.0,
                 mood TEXT DEFAULT '',
-                mood_turns INTEGER DEFAULT 0
+                mood_turns INTEGER DEFAULT 0,
+                mood_at INTEGER DEFAULT 0
             );
         """
         )
@@ -74,6 +75,7 @@ def _init_db():
             ("avg_friendliness", "REAL DEFAULT 0.0"),
             ("mood", "TEXT DEFAULT ''"),
             ("mood_turns", "INTEGER DEFAULT 0"),
+            ("mood_at", "INTEGER DEFAULT 0"),
         ):
             if col not in existing_profile_cols:
                 conn.execute(f"ALTER TABLE user_profile ADD COLUMN {col} {ddl}")
@@ -188,7 +190,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             SELECT message_count, avg_offtopic, avg_provocation,
                    avg_spam, avg_rudeness, avg_verbosity,
                    interests, notes, first_name, last_name, username, facts,
-                   avg_friendliness, mood, mood_turns
+                   avg_friendliness, mood, mood_turns, mood_at
             FROM user_profile WHERE user_id=?
                  """,
             (user_id,),
@@ -218,6 +220,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
                 "avg_friendliness": 0.0,
                 "mood": "",
                 "mood_turns": 0,
+                "mood_at": 0,
                 "interests": [],
                 "notes": "",
                 "facts": {},
@@ -260,6 +263,7 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "avg_friendliness": row[12] or 0.0,
             "mood": row[13] or "",
             "mood_turns": row[14] or 0,
+            "mood_at": row[15] or 0,
         }
     finally:
         conn.close()
@@ -267,11 +271,13 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
 
 def update_user_mood(user_id: int, mood: str, hold_turns: int):
     """Short-term mood: a non-empty `mood` (the tone of the user's latest message) is held for the
-    next `hold_turns` replies; an empty one counts the held mood down and clears it at zero."""
+    next `hold_turns` replies (stamped with `mood_at`, so it also expires with time); an empty one
+    counts the held mood down and clears it at zero."""
     with get_connection() as conn:
         if mood:
             conn.execute(
-                "UPDATE user_profile SET mood = ?, mood_turns = ? WHERE user_id = ?", (mood, hold_turns, user_id)
+                "UPDATE user_profile SET mood = ?, mood_turns = ?, mood_at = ? WHERE user_id = ?",
+                (mood, hold_turns, int(time.time()), user_id),
             )
         else:
             conn.execute(
@@ -324,8 +330,12 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     profile = get_user_profile(user_id)
     alpha = PROFILE_EMA_ALPHA
 
-    def ema(previous: float, sample: float) -> float:
-        return alpha * sample + (1 - alpha) * previous
+    def ema(previous: float, sample) -> float:
+        # A malformed sample (null, a string) keeps the previous average instead of failing the update.
+        try:
+            return alpha * float(sample) + (1 - alpha) * previous
+        except (TypeError, ValueError):
+            return previous
 
     avg_offtopic = ema(profile["avg_offtopic"], profile_update.get("offtopic", 0))
     avg_provocation = ema(profile["avg_provocation"], profile_update.get("provocation", 0))

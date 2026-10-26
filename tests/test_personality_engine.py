@@ -161,6 +161,7 @@ def _att_profile(**kw):
         "avg_friendliness": 0.0,
         "mood": "",
         "mood_turns": 0,
+        "mood_at": 1_000_000,
         "message_count": 10,
         "facts": {},
     }
@@ -179,16 +180,24 @@ def test_neutral_mid_band_user_has_no_attitudes():
     assert PersonalityEngine.attitudes(_att_profile()) == []
 
 
-def test_current_mood_comes_first_and_only_while_held():
+_NOW = 1_000_100
+
+
+def test_held_mood_comes_first_and_only_while_held():
     p = _att_profile(mood="rude", mood_turns=3, avg_friendliness=0.8, message_count=30)
-    assert PersonalityEngine.attitudes(p) == [
-        ("rude", "just now"),
+    assert PersonalityEngine.attitudes(p, _NOW) == [
+        ("rude", "still, from a recent message"),
         ("friend", "habitually"),
         ("regular", "30 talks so far"),
     ]
-    later = PersonalityEngine.attitudes(_att_profile(mood="rude", mood_turns=1))
-    assert later[0] == ("rude", "still, from a recent message")
-    assert all(key != "rude" for key, _ in PersonalityEngine.attitudes(_att_profile(mood="rude", mood_turns=0)))
+    held_out = PersonalityEngine.attitudes(_att_profile(mood="rude", mood_turns=0), _NOW)
+    assert all(key != "rude" for key, _ in held_out)
+
+
+def test_held_mood_expires_with_time():
+    p = _att_profile(mood="rude", mood_turns=3)
+    late = 1_000_000 + PersonalityEngine.MOOD_TTL_SECONDS + 1
+    assert all(key != "rude" for key, _ in PersonalityEngine.attitudes(p, late))
 
 
 def test_reputation_newcomer_and_expertise():
@@ -204,8 +213,16 @@ def test_reputation_newcomer_and_expertise():
 
 def test_attitude_note_uses_persona_texts_and_skips_unknown_keys():
     p = _att_profile(mood="friendly", mood_turns=1, message_count=1)
-    note = PersonalityEngine.build_attitude_note(p, {"friend": "Be warm."}, "Миша")
+    note = PersonalityEngine.build_attitude_note(p, {"friend": "Be warm."}, "Миша", _NOW)
     assert "(Миша)" in note
     assert "- friend (still, from a recent message): Be warm." in note
     assert "newcomer" not in note
-    assert PersonalityEngine.build_attitude_note(p, {}, "Миша") == ""
+    assert "just now" not in note  # no reactive texts for this persona
+    assert PersonalityEngine.build_attitude_note(p, {}, "Миша", _NOW) == ""
+
+
+def test_attitude_note_covers_the_tone_of_the_message_being_answered():
+    """The model tags this message's mood in the same call, so the reactive texts are always offered."""
+    note = PersonalityEngine.build_attitude_note(_att_profile(), {"rude": "Take offence.", "friend": "Be warm."})
+    assert "just now" in note and "- rude: Take offence." in note
+    assert "friend" not in note and "friendly" not in note

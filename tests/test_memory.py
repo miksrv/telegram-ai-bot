@@ -174,12 +174,24 @@ def test_persona_switch_drops_history_but_keeps_bot_time(monkeypatch):
     assert mm.last_bot_message_at(1) == 1000.0
 
 
-def test_persona_changed_records_marker(tmp_path, monkeypatch):
+def test_persona_marker_missing_counts_as_same_persona(tmp_path):
     import core.memory as memory_mod
 
     marker = str(tmp_path / "sub" / "active_persona")
-    assert memory_mod._persona_changed(marker) is True
+    assert memory_mod._persona_changed(marker) is False
+    memory_mod._record_persona(marker)
     assert memory_mod._persona_changed(marker) is False
     with open(marker, "w", encoding="utf-8") as f:
         f.write("someone-else")
     assert memory_mod._persona_changed(marker) is True
+
+
+def test_flush_records_the_persona_with_the_history(monkeypatch):
+    import core.memory as memory_mod
+
+    calls = []
+    monkeypatch.setattr(memory_mod, "load_memory", dict)
+    monkeypatch.setattr(memory_mod, "flush_memory", lambda storage: calls.append("history"))
+    monkeypatch.setattr(memory_mod, "_record_persona", lambda: calls.append("marker"))
+    MemoryManager().flush()
+    assert calls == ["history", "marker"]

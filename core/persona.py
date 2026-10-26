@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 from config.settings import PERSONA, PERSONAS_DIR
 
 REQUIRED_SECTIONS = ("identity", "style", "humor", "proactive_character")
-# Optional: a short in-character nudge sent right before the user's message (see core/brain.py).
+# Optional: a short in-character nudge sent right after the user's message (see core/brain.py).
 OPTIONAL_SECTIONS = ("reminder",)
 # Optional "## attitudes" section: "- key: how to treat such a person" lines, keyed by
 # PersonalityEngine.attitudes() (rude, provocative, offtopic, spammer, friend, newcomer, regular, ...).

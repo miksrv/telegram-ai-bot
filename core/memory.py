@@ -21,23 +21,27 @@ PERSONA_MARKER_PATH = os.path.join(os.path.dirname(DB_PATH), "active_persona")
 
 
 def _persona_changed(marker_path: str = PERSONA_MARKER_PATH) -> bool:
-    """True when the persisted history was written under another persona (or it is unknown),
-    recording the active persona for the next start. Old assistant turns in another voice make
-    the model keep that voice despite the new system prompt, so such history is discarded."""
+    """True when the persisted history was written under another persona. Old assistant turns in
+    another voice make the model keep that voice despite the new system prompt, so such history is
+    discarded. No marker yet (first start with this feature) counts as the same persona."""
     try:
         with open(marker_path, encoding="utf-8") as f:
             previous = f.read().strip()
     except OSError:
-        previous = ""
-    if previous == persona.key:
         return False
+    return bool(previous) and previous != persona.key
+
+
+def _record_persona(marker_path: str = PERSONA_MARKER_PATH):
+    """Records which persona wrote the history being persisted. Written together with the history
+    (on flush), so after an unclean stop the old history and the old marker still match and the
+    next start drops that history again."""
     try:
         os.makedirs(os.path.dirname(marker_path), exist_ok=True)
         with open(marker_path, "w", encoding="utf-8") as f:
             f.write(persona.key)
     except OSError as e:
         logging.warning("Could not record the active persona: %s", e)
-    return True
 
 
 class MemoryManager:
@@ -64,8 +68,7 @@ class MemoryManager:
     def _load(self):
         """Restores chat history from SQLite into RAM."""
         chat_data = load_memory()
-        # Always record the active persona, even with nothing to drop yet.
-        reset = _persona_changed() and bool(chat_data)
+        reset = bool(chat_data) and _persona_changed()
         if reset:
             logging.info("Persona changed to '%s': chat history from the previous persona dropped", persona.key)
         for chat_id, data in chat_data.items():
@@ -214,6 +217,7 @@ class MemoryManager:
         """Persists current in-RAM state to SQLite. Called on shutdown."""
         with self._lock:
             flush_memory(self.chat_storage)
+            _record_persona()
 
     def cleanup(self):
         """

@@ -556,32 +556,15 @@ class TARSBrain:
             return None
 
     # --------------------------------------------------
-    # PROACTIVE DIRECT REPLY (daily budget, targets one specific message)
+    # /me — how the persona sees the asking user
     # --------------------------------------------------
     def describe_user(self, user_id: int, identity: dict):
         """/me: how the active persona sees this user, from their profile and the attitude engine.
-        Returns the reply text; LLM failures map to the usual fixed failure replies."""
-        profile = db_get_user_profile(user_id, identity)
-        name = profile.get("first_name") or identity.get("first_name") or ""
-        attitude_lines = []
-        for key, why in PersonalityEngine.attitudes(profile):
-            how = persona.attitudes.get(key)
-            attitude_lines.append(f"- {key} ({why}): {how}" if how else f"- {key} ({why})")
-        card = "\n".join(
-            [
-                f"Name: {name or 'unknown'}",
-                f"Talks with you so far: {profile['message_count']}",
-                f"Interests: {', '.join(profile['interests']) or 'unknown'}",
-                f"Facts: {self._format_facts(profile.get('facts') or {}) or 'none'}",
-                f"Notes: {profile['notes'] or 'none'}",
-                "Who they are to you (and how you treat such people):",
-                *(attitude_lines or ["- nothing special yet"]),
-            ]
-        )
+        Returns the reply text; LLM or DB failures map to the usual fixed failure replies."""
         try:
             raw = self._call_llm(
                 "text",
-                [{"role": "system", "content": build_me_prompt(card)}],
+                [{"role": "system", "content": build_me_prompt(self._describe_user_card(user_id, identity))}],
                 temperature=0.9,
                 max_tokens=400,
                 top_p=0.95,
@@ -597,6 +580,29 @@ class TARSBrain:
             logging.exception(f"describe_user error (user={user_id}): {e}")
             return LLM_FAILURE_REPLY
 
+    def _describe_user_card(self, user_id: int, identity: dict) -> str:
+        """What the persona knows about this user, for the /me prompt."""
+        profile = db_get_user_profile(user_id, identity)
+        name = profile.get("first_name") or identity.get("first_name") or ""
+        attitude_lines = []
+        for key, why in PersonalityEngine.attitudes(profile):
+            how = persona.attitudes.get(key)
+            attitude_lines.append(f"- {key} ({why}): {how}" if how else f"- {key} ({why})")
+        return "\n".join(
+            [
+                f"Name: {name or 'unknown'}",
+                f"Talks with you so far: {profile['message_count']}",
+                f"Interests: {', '.join(profile['interests']) or 'unknown'}",
+                f"Facts: {self._format_facts(profile.get('facts') or {}) or 'none'}",
+                f"Notes: {profile['notes'] or 'none'}",
+                "Who they are to you (and how you treat such people):",
+                *(attitude_lines or ["- nothing special yet"]),
+            ]
+        )
+
+    # --------------------------------------------------
+    # PROACTIVE DIRECT REPLY (daily budget, targets one specific message)
+    # --------------------------------------------------
     def post_proactive_reply(self, chat_id: int, target_text: str, target_author: str):
         """
         Generates a direct reply to a specific past message. The caller (the
