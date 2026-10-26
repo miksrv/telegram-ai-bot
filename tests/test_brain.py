@@ -1,7 +1,17 @@
+import dataclasses
 import json
 import logging
 
+import pytest
+
 from core.brain import TARSBrain
+from core.persona import load_persona
+
+
+@pytest.fixture(autouse=True)
+def _persona_without_reminder(monkeypatch):
+    """These tests pin the exact messages[] layout; the reminder/attitude turn is covered in test_persona."""
+    monkeypatch.setattr("core.brain.persona", dataclasses.replace(load_persona("tars"), reminder="", attitudes={}))
 
 
 def make_brain() -> TARSBrain:
@@ -191,6 +201,35 @@ def test_analyze_image_prunes_history_and_builds_multimodal_turn(monkeypatch):
     history = brain_mod.memory.get_chat_history(chat_id)
     assert history[-2] == (user_id, "user", "[изображение] что это за объект")
     assert history[-1] == (user_id, "assistant", "наблюдение")
+
+
+def test_analyze_image_attaches_photo_to_user_turn_when_reminder_follows(monkeypatch):
+    """The persona reminder comes after the user turn; the image must still go into the user turn."""
+    from core import brain as brain_mod
+
+    captured = {}
+    monkeypatch.setattr(brain_mod, "persona", dataclasses.replace(load_persona("tars"), reminder="Stay TARS."))
+    monkeypatch.setattr(brain_mod.session, "get", lambda *a, **k: _FakeImg())
+
+    def fake_call(self, model, messages, **kw):
+        captured["messages"] = messages
+        return '{"reply": "наблюдение"}'
+
+    monkeypatch.setattr(brain_mod.TARSBrain, "_call_llm", fake_call)
+
+    brain_mod.brain.analyze_image(
+        chat_id=987_655,
+        user_id=9_000_112,
+        image_url="http://example/img.jpg",
+        caption="что это",
+        identity={"id": 9_000_112, "first_name": "CI"},
+        photo_from_reply=True,
+    )
+
+    msgs = captured["messages"]
+    assert msgs[-1]["role"] == "system" and msgs[-1]["content"].startswith("Stay TARS.")
+    assert msgs[-2]["role"] == "user"
+    assert any(p["type"] == "image_url" for p in msgs[-2]["content"])
 
 
 # --------------------------------------------------

@@ -16,6 +16,7 @@ from config.settings import (
 from core.llm import llm_engine
 from core.llm.base import LLMEmptyResponseError
 from core.memory import memory
+from core.persona import persona
 from core.personality_engine import PersonalityEngine
 from core.prompts import (
     build_general_system_prompt,
@@ -30,6 +31,7 @@ from database.profile_repo import (
     db_get_user_profile,
     db_increment_message_count,
     db_update_user_facts,
+    db_update_user_mood,
     db_update_user_notes,
     db_update_user_profile,
 )
@@ -77,7 +79,13 @@ class TARSBrain:
             system_content = build_reply_only_system_prompt(identity_block, profile_summary)
 
         messages = self._build_messages_array(
-            chat_history, user_message, system_content, reply_to_text, reply_to_is_bot, user_names
+            chat_history,
+            user_message,
+            system_content,
+            reply_to_text,
+            reply_to_is_bot,
+            user_names,
+            attitude_note=self._attitude_note(profile),
         )
 
         try:
@@ -151,7 +159,13 @@ class TARSBrain:
             # global context, ancient-reply pruning, and quote handling. Its final user
             # turn (a plain string) is then upgraded to a multimodal text+image message.
             messages = self._build_messages_array(
-                history, vision_message, system_content, reply_to_text, reply_to_is_bot, user_names
+                history,
+                vision_message,
+                system_content,
+                reply_to_text,
+                reply_to_is_bot,
+                user_names,
+                attitude_note=self._attitude_note(profile),
             )
 
             img = session.get(image_url, timeout=15)
@@ -159,8 +173,10 @@ class TARSBrain:
 
             image_b64 = base64.b64encode(img.content).decode()
 
-            final_text = messages[-1]["content"]
-            messages[-1] = {
+            # The final user turn (a persona reminder system turn may follow it).
+            last_user = max(i for i, m in enumerate(messages) if m["role"] == "user")
+            final_text = messages[last_user]["content"]
+            messages[last_user] = {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": final_text},
@@ -237,6 +253,14 @@ class TARSBrain:
 
         # Always increment the interaction counter
         db_increment_message_count(user_id)
+
+        # Short-term mood from this message's tone (every turn, not only full updates)
+        try:
+            db_update_user_mood(
+                user_id, PersonalityEngine.normalize_mood(data.get("mood")), PersonalityEngine.MOOD_HOLD_TURNS
+            )
+        except Exception:
+            logging.exception(f"Failed to update mood for user {user_id}")
 
         # Profile update only on designated turns (first message + every 5th).
         # These are optional side effects of an already-valid reply: a malformed
@@ -405,6 +429,7 @@ class TARSBrain:
         reply_to_text: str = None,
         reply_to_is_bot: bool = True,
         user_names: dict = None,
+        attitude_note: str = "",
     ) -> list:
         messages = [{"role": "system", "content": system_content}]
         user_names = user_names or {}
@@ -435,6 +460,7 @@ class TARSBrain:
             if reply_to_is_bot:
                 messages.append({"role": "assistant", "content": snippet})
             messages.append({"role": "user", "content": current_message})
+            self._append_persona_reminder(messages, attitude_note)
             return messages
 
         last_assistant_text = None
@@ -453,7 +479,24 @@ class TARSBrain:
             messages.append({"role": "assistant", "content": snippet})
 
         messages.append({"role": "user", "content": current_message})
+        self._append_persona_reminder(messages, attitude_note)
         return messages
+
+    @staticmethod
+    def _append_persona_reminder(messages: list, attitude_note: str = ""):
+        """Adds the persona's optional in-character reminder, plus how to treat this particular
+        person, as the last (system) turn, after the user's message. Earlier assistant turns (e.g.
+        written under another persona) pull the model toward their style more strongly than the
+        distant system prompt; only a note after the latest turn reliably outweighs them (tested
+        on gpt-4o-mini: placed before the user turn, the attitude note was mostly ignored)."""
+        content = "\n\n".join(part for part in (persona.reminder, attitude_note) if part)
+        if content:
+            messages.append({"role": "system", "content": content})
+
+    @staticmethod
+    def _attitude_note(profile: dict) -> str:
+        """How the active persona treats this person (PersonalityEngine attitudes + persona texts)."""
+        return PersonalityEngine.build_attitude_note(profile, persona.attitudes, profile.get("first_name", ""))
 
     # --------------------------------------------------
     # LLM call abstraction (for both text and vision) — delegates to the

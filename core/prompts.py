@@ -60,12 +60,14 @@ ROLE_INTRO = (
 
 GENERAL_JSON_SCHEMA = """{{
   "reply": "<your response text in Russian>",
+  "mood": "friendly|rude|provocative|offtopic|spam|neutral",
   "profile_update": {{
     "offtopic": 0..1,
     "provocation": 0..1,
     "spam": 0..1,
     "rudeness": 0..1,
     "verbosity": 0..1,
+    "friendliness": 0..1,
     "interests": ["list of user interests relevant to this message"]
   }},
   "notes": "<short rolling summary of communication style/behavioral hints, revise only what changed>",
@@ -73,7 +75,8 @@ GENERAL_JSON_SCHEMA = """{{
 }}"""
 
 REPLY_ONLY_JSON_SCHEMA = """{{
-  "reply": "<your response text in Russian>"
+  "reply": "<your response text in Russian>",
+  "mood": "friendly|rude|provocative|offtopic|spam|neutral"
 }}"""
 
 RESPONSE_RULES = """Rules for your response:
@@ -106,16 +109,28 @@ PERSONALIZATION_RULE = (
 
 PERSONALIZATION_BLOCK = "\n\n".join(["{self_identity}", PERSONALIZATION_RULE])
 
-GENERAL_INSTRUCTIONS = """Instructions:
+# Short-term mood tag for every reply (both contracts): PersonalityEngine holds it for a few turns.
+MOOD_RULE = (
+    '- "mood" tags the tone of the user\'s latest message only: friendly (warm, kind, thankful, joking along '
+    "with you), rude (insults, swearing, contempt toward you), provocative (trolling, baiting, arguing for its "
+    "own sake), offtopic (unrelated to astronomy, space or science), spam (low-effort, repetitive, flooding), "
+    "neutral otherwise. Judge honestly; most messages are neutral."
+)
+
+GENERAL_INSTRUCTIONS = (
+    """Instructions:
 - "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. {persona_humor}
-- "profile_update" should contain numeric tendencies and relevant interests extracted from this message.
+- "profile_update" should contain numeric tendencies and relevant interests extracted from this message; "friendliness" is their warmth toward you and the community.
 - "notes" is a short rolling summary of communication style and behavioral hints (ты/вы formality, message length, emoji use, preferences). Update only what changed; a few sentences, never a transcript.
-- "facts" carries only keys that are new or changed this turn; omit unchanged keys; send null/empty to remove one."""
+- "facts" carries only keys that are new or changed this turn; omit unchanged keys; send null/empty to remove one.
+"""
+    + MOOD_RULE
+)
 
 REPLY_ONLY_INSTRUCTIONS = (
     "Instructions:\n"
     '- "reply" should be informative, engaging, and easy to read; expand explanations when it improves clarity. '
-    "{persona_humor}"
+    "{persona_humor}\n" + MOOD_RULE
 )
 
 CONTEXT_TAIL_TEMPLATE = """{capabilities}

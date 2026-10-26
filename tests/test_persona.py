@@ -99,3 +99,46 @@ def test_peasant_prompt_names_both_identities(monkeypatch):
     general = build_general_system_prompt("id", "profile")
     assert "Микула" in general and "TARS" in general
     assert "JSON" in general
+
+
+def test_reminder_section_is_optional():
+    assert parse_persona("bot", VALID).reminder == ""
+    p = parse_persona("bot", VALID + "## reminder\nStay a bot, always.\n")
+    assert p.reminder == "Stay a bot, always."
+
+
+def test_persona_reminder_is_sent_right_after_the_user_turn(monkeypatch):
+    import core.brain as brain_mod
+
+    history = [(5, "user", "q"), (5, "assistant", "old voice")]
+    monkeypatch.setattr(brain_mod, "persona", parse_persona("bot", VALID + "## reminder\nStay a bot.\n"))
+    msgs = brain_mod.brain._build_messages_array(history, "now", "SYS")
+    assert msgs[-1] == {"role": "system", "content": "Stay a bot."}
+    assert msgs[-2]["content"] == "now"
+    # Ancient-reply path (quoted text not in the window) gets the reminder too.
+    msgs = brain_mod.brain._build_messages_array(history, "now", "SYS", reply_to_text="a long-gone bot message")
+    assert msgs[-1] == {"role": "system", "content": "Stay a bot."}
+
+    monkeypatch.setattr(brain_mod, "persona", parse_persona("bot", VALID))
+    msgs = brain_mod.brain._build_messages_array(history, "now", "SYS")
+    assert all(m["role"] != "system" for m in msgs[1:])
+
+
+def test_attitudes_section_is_parsed_into_a_dict():
+    p = parse_persona("bot", VALID + "## attitudes\n- Rude: Be cold.\n- friend: Be warm.\nnot a bullet\n- broken\n")
+    assert p.attitudes == {"rude": "Be cold.", "friend": "Be warm."}
+    assert parse_persona("bot", VALID).attitudes == {}
+
+
+def test_shipped_personas_cover_every_attitude_key():
+    keys = {"rude", "provocative", "offtopic", "spammer", "friend", "newcomer", "regular", "expert", "beginner"}
+    for key in ("tars", "peasant"):
+        assert keys <= set(load_persona(key).attitudes)
+
+
+def test_attitude_note_joins_the_reminder_turn(monkeypatch):
+    import core.brain as brain_mod
+
+    monkeypatch.setattr(brain_mod, "persona", parse_persona("bot", VALID + "## reminder\nStay a bot.\n"))
+    msgs = brain_mod.brain._build_messages_array([], "now", "SYS", attitude_note="NOTE")
+    assert msgs[-1] == {"role": "system", "content": "Stay a bot.\n\nNOTE"}
