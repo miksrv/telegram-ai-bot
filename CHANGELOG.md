@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-25
+
+### Added
+
+- Per-user attitudes: every reply now also tags the tone of the user's
+  latest message (`mood`: friendly/rude/provocative/offtopic/spam/neutral),
+  held for a few replies, and the full profile update tracks a new
+  `friendliness` average. `PersonalityEngine.attitudes()` turns the held
+  mood, long-term reputation, familiarity and experience into attitude keys
+  (rude, provocative, offtopic, spammer, friend, newcomer, regular, expert,
+  beginner), and the persona's new `## attitudes` section says how to treat
+  each. New `user_profile` columns `avg_friendliness`, `mood`, `mood_turns`
+  are migrated in place.
+- Optional `## reminder` persona section: a short in-character nudge sent,
+  together with the attitude note, as a system turn after the user's
+  message, so earlier replies in another voice do not override the persona.
+- `/me` command: the active persona tells the user, in its own voice, how it
+  sees them (interests, facts, notes, attitude). One LLM call, same access
+  rules and cooldown as ordinary questions.
+
+### Changed
+
+- The `peasant` persona (Микула) now speaks stylized Old Russian in every
+  sentence and answers only through folk signs, old tales and peasant
+  wisdom, never with modern science.
+- When `PERSONA` changes, the restored chat history from the previous
+  persona is dropped at startup (tracked by a `data/active_persona` marker
+  next to the database); the "bot spoke last" guard is kept.
+
 ## [1.1.1] - 2026-10-21
 
 ### Added

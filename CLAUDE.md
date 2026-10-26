@@ -23,7 +23,7 @@ core/
   memory.py                      # MemoryManager: in-RAM chat + user context, loaded from SQLite on startup & flushed on shutdown; add_bot_message/last_sender_is_bot/get_user_earlier_messages helpers
   reactions.py                   # Keyword-driven emoji reactions (no LLM): match_keyword/pick_reaction/maybe_react, per-chat cooldown, allowed-emoji guard
   prompts.py                     # Structural prompt templates (JSON contract, plain-text rules, user card) + builders, persona text injected (incl. PROACTIVE_PROMPT_TEMPLATE, build_capabilities_line())
-  personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives)
+  personality_engine.py          # Per-user adaptive behavior rules (0–1 scores + message_count/experience fact → directives) + attitudes() (mood/reputation/familiarity → persona attitude keys)
   cooldown.py                    # CooldownManager: sliding window rate limiter
   proactive_engine.py            # ProactiveEngine: per-chat state machine (daily cap, gap, scheduling) for both general posts and the direct replies (both skipped while the bot spoke last in the chat)
 database/
@@ -36,6 +36,7 @@ handlers/
   weather_handler.py             # /weather: validates input, delegates to services/weather_service.py
   stats_handler.py               # /stats: aggregate DB statistics (db.get_db_stats), Russian output
   help_handler.py                # /help, /start: static bot description + command list (Russian)
+  me_handler.py                  # /me: the persona describes how it sees the asking user (brain.describe_user, one LLM call)
   starmap_handler.py             # /sky, /horizon, /skymap, /galaxy: requests star charts from starmap-service via MQTT
   image_handler.py               # /image: generates an image via services/image_service.py, enforces the per-user daily quota
   delivery.py                    # Shared status-message lifecycle (safe_reply/safe_delete) for MQTT result delivery (/photo + starmap) and reused by /image
@@ -55,7 +56,9 @@ utils/
 
 ## Persona
 
-Who the bot is lives in `personas/<name>.md`, not in code; `settings.PERSONA` (default `peasant`; `tars` is the original robot) picks the file and an unknown name raises `RuntimeError` at import, like `LLM_ENGINE`. `core/persona.py` parses it once into the module-level `persona` (frozen dataclass). **File format:** `key: value` header lines (`name`, `self_names` — comma-separated, `*` = any ending, `triggers` — comma-separated lowercase stems) up to a line holding only `---`, then prompt text in required `## identity`, `## style` (tone bullets), `## humor` (one sentence; the only place for humor, do not repeat it in `## style`) and `## proactive_character` (one line) sections; text before the first `## ` heading is a comment. CRLF line endings and a UTF-8 BOM are normalized before parsing. `list_personas()` lives in `config/settings.py` (it validates `PERSONA` at import, and `core/persona.py` imports settings). **What stays in code** (`core/prompts.py`, shared by all personas): the JSON response contract, plain-text/no-markdown rules, honesty rules, personalization rule, capabilities line, profile/notes/facts rules, and the proactive-prompt skeleton. The persona text is passed to `str.format` as values (`_persona_fields()`), so braces in a persona file are harmless.
+Who the bot is lives in `personas/<name>.md`, not in code; `settings.PERSONA` (default `peasant`; `tars` is the original robot) picks the file and an unknown name raises `RuntimeError` at import, like `LLM_ENGINE`. `core/persona.py` parses it once into the module-level `persona` (frozen dataclass). **File format:** `key: value` header lines (`name`, `self_names` — comma-separated, `*` = any ending, `triggers` — comma-separated lowercase stems) up to a line holding only `---`, then prompt text in required `## identity`, `## style` (tone bullets), `## humor` (one sentence; the only place for humor, do not repeat it in `## style`) and `## proactive_character` (one line) sections, plus optional `## reminder` (a short in-character nudge) and `## attitudes` (`- key: how to treat such a person` lines, keyed by `PersonalityEngine.attitudes()`: rude, provocative, offtopic, spammer, friend, newcomer, regular, expert, beginner); text before the first `## ` heading is a comment. CRLF line endings and a UTF-8 BOM are normalized before parsing. `list_personas()` lives in `config/settings.py` (it validates `PERSONA` at import, and `core/persona.py` imports settings). **What stays in code** (`core/prompts.py`, shared by all personas): the JSON response contract, plain-text/no-markdown rules, honesty rules, personalization rule, capabilities line, profile/notes/facts rules, and the proactive-prompt skeleton. The persona text is passed to `str.format` as values (`_persona_fields()`), so braces in a persona file are harmless.
+
+**Reminder + attitude turn.** `brain._build_messages_array` appends one closing `system` turn after the user's message, joining `persona.reminder` and `PersonalityEngine.build_attitude_note()` (only the attitudes the persona has a text for). It goes last on purpose: earlier assistant turns in another voice outweigh the distant system prompt, and an attitude note placed before the user turn was mostly ignored (gpt-4o-mini). `analyze_image` therefore attaches the photo to the last *user* turn, not to `messages[-1]`. **Persona switch:** `core/memory.py` keeps a `data/active_persona` marker (next to `DB_PATH`); when it differs from `persona.key` at startup the restored chat history is dropped (the seeded bot-spoke-last time is kept).
 
 **Self-identity and triggers.** The self-identity rule lists the persona's `self_names` followed by the base `"ТАРС"/"TARS"/"Тарс*"` (always included, deduplicated), so both names mean the bot, including third-person mentions. `utils/triggers.py` builds `TRIGGERS` from the base stems `тарс`/`tars` plus `persona.triggers`, so the bot answers to TARS and to the persona's own name (peasant: `микул`, matching Микула/Микулу/Микулушка). `memory.get_chat_context` labels assistant turns with `persona.name`. Fixed bot-facing Russian strings (`LLM_FAILURE_REPLY`, command replies, `/help`) are not persona-driven. **To add a persona:** copy `personas/tars.md`, edit it, set `PERSONA` to the file name.
 
@@ -207,12 +210,14 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 ```json
 {
   "reply": "Text response in Russian",
+  "mood": "friendly|rude|provocative|offtopic|spam|neutral",
   "profile_update": {
     "offtopic": 0.0,
     "provocation": 0.0,
     "spam": 0.0,
     "rudeness": 0.0,
     "verbosity": 0.5,
+    "friendliness": 0.0,
     "interests": ["astronomy", "astrophotography"]
   },
   "notes": "Short rolling summary of communication style/behavioral hints",
@@ -230,7 +235,8 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 **Conversational path — reply only**: used on all other turns to reduce output tokens:
 ```json
 {
-  "reply": "Text response in Russian"
+  "reply": "Text response in Russian",
+  "mood": "friendly|rude|provocative|offtopic|spam|neutral"
 }
 ```
 
@@ -247,6 +253,7 @@ Default model per provider/role (overridable via the `*_MODEL_TEXT`/`*_MODEL_VIS
 - `message_count` increments on every bot response (via `increment_message_count()`), independent of profile updates
 - Behavioral metrics (`avg_offtopic`, `avg_provocation`, `avg_spam`, `avg_rudeness`, `avg_verbosity`) are updated via an exponential moving average (`avg = alpha * sample + (1 - alpha) * avg`, `PROFILE_EMA_ALPHA`, default `0.3`) only on full-update turns (first message + every `PROFILE_FULL_UPDATE_INTERVAL`-th, default every 3rd). EMA (not a cumulative average) is deliberate: since updates only land on a fraction of turns, a cumulative average keyed on `message_count` would shrink each new sample's weight too fast and freeze the profile
 - `PersonalityEngine` converts 0–1 float scores into 10-level directive strings injected into the system prompt, plus two cheap positive rules: `familiarity_rule(message_count)` (newcomer below `NEWCOMER_THRESHOLD` → slightly more explanatory/welcoming; regular at/above `REGULAR_THRESHOLD` → address by name/known facts, skip re-introductions) and `depth_rule(experience)` (from the `experience` structured fact: beginner/advanced/pro each get one terse depth directive, `amateur`/unset get none)
+- **Attitudes.** Every reply (both contracts) carries a `mood` tag for the user's latest message (`friendly|rude|provocative|offtopic|spam|neutral`); `database.db.update_user_mood()` holds a non-neutral one for `PersonalityEngine.MOOD_HOLD_TURNS` (3) replies and counts it down on neutral ones (`user_profile.mood`/`mood_turns`). The full update also averages `friendliness` into `avg_friendliness`. `PersonalityEngine.attitudes(profile)` returns `(key, why)` pairs: held mood first ("just now" only on the first reply after it was set), then reputation (any `avg_*` ≥ `REPUTATION_THRESHOLD` 0.25, friendliness ≥ `FRIEND_THRESHOLD` 0.5), then newcomer/regular and expert/beginner. `/me` (`brain.describe_user`) renders the same data into a one-off prompt (`core.prompts.build_me_prompt`)
 - `notes` is an LLM-maintained short free-text summary of communication style and behavioral hints, fully replaced each time it runs; durable structured facts live separately in `facts` (JSON column, see "LLM Response Contracts" above) — a small fixed set of keys (`name`, `location`, `equipment`, `experience`, `topics`) merged incrementally via `database.db.update_user_facts()`, rendered compactly into the system prompt's user card (`key: value; ...`, empty values omitted)
 - Conversation history turns are labeled with the speaker's real name (`database.db.get_display_names()`, one batched query per turn for every distinct user_id in the window) instead of `User#<id>`, falling back to `@username` then `User#<id>` when no profile row/first_name exists
 - A small, char-truncated "earlier messages from this user" background block (`PERSONALIZATION_EARLIER_MESSAGES_COUNT`, `PERSONALIZATION_EARLIER_MESSAGE_CHARS`) surfaces this user's own messages that fell out of the rolling context window, sourced from the in-RAM memory deque first and `database.db.get_recent_user_messages()` as an optional supplement — injected into the system prompt's user card, never into messages[], and clearly labeled as background so it doesn't derail the live conversation
