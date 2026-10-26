@@ -12,6 +12,7 @@ from config.settings import ALLOWED_CHAT_IDS, BOT_TOKEN
 from handlers import (
     help_handler,
     image_handler,
+    me_handler,
     message_handler,
     photo_handler,
     starmap_handler,
@@ -70,6 +71,11 @@ def init_bot() -> TeleBot:
     def _stats_handler(message: Message):
         stats_handler.handle_stats(bot, message, ALLOWED_CHAT_IDS)
 
+    # --- /me: how the bot sees the asking user ---
+    @bot.message_handler(commands=["me"])
+    def _me_handler(message: Message):
+        me_handler.handle_me(bot, message, ALLOWED_CHAT_IDS)
+
     # --- Help command handler ---
     @bot.message_handler(commands=["help", "start"])
     def _help_handler(message: Message):
@@ -98,6 +104,7 @@ def _build_commands(starmap_online: bool):
         #         BotCommand("status", "Телеметрия спутника CubeSat"),
         #         BotCommand("photo", "Снимок с камеры CubeSat"),
         BotCommand("image", "Сгенерировать изображение: /image <описание>"),
+        BotCommand("me", "Каким бот тебя видит"),
         BotCommand("stats", "Статистика бота"),
     ]
     if starmap_online:

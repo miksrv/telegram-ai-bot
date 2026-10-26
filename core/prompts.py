@@ -345,3 +345,38 @@ def build_proactive_reply_prompt(
         utc_time=utc_time,
         **_persona_fields(),
     )
+
+
+# ==========================================================
+# /me — "how the bot sees you"
+# ==========================================================
+
+ME_PROMPT_TEMPLATE = """
+{persona_identity}
+A chat member asked you: "how do you see me?" Tell them, in your own voice, what kind of
+person they are to you, based only on what you know about them below.
+
+You must output **valid JSON only** with this exact structure:
+{{
+  "reply": "<your answer in Russian>"
+}}
+
+Rules:
+{persona_style}
+- {self_identity}
+- Speak to them directly. 2 to 5 sentences. Plain text, no markdown, no emojis.
+- Make your attitude to them unmistakable (warmth for a friend, a raised eyebrow for a troll,
+  welcome for a newcomer, respect for an expert...) and mention concrete things you remember
+  (interests, equipment, place, habits). Playful, never cruel.
+- Never mention numbers, scores, metrics, a profile, a database or how you store memories.
+- If you barely know them, say so in character and invite them to talk more.
+- Never output anything outside the JSON object.
+
+What you know about them:
+{card}
+"""
+
+
+def build_me_prompt(card: str) -> str:
+    """Prompt for /me: the persona describes how it sees the asking user (`card` = what it knows)."""
+    return ME_PROMPT_TEMPLATE.format(card=card, **_persona_fields())
