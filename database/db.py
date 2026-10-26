@@ -58,7 +58,10 @@ def _init_db():
                 interests TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
                 facts TEXT DEFAULT '',
-                last_updated INTEGER
+                last_updated INTEGER,
+                avg_friendliness REAL DEFAULT 0.0,
+                mood TEXT DEFAULT '',
+                mood_turns INTEGER DEFAULT 0
             );
         """
         )
@@ -66,6 +69,14 @@ def _init_db():
         existing_profile_cols = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
         if "facts" not in existing_profile_cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN facts TEXT DEFAULT ''")
+        # Migration for databases created before the attitude fields (friendliness + short-term mood).
+        for col, ddl in (
+            ("avg_friendliness", "REAL DEFAULT 0.0"),
+            ("mood", "TEXT DEFAULT ''"),
+            ("mood_turns", "INTEGER DEFAULT 0"),
+        ):
+            if col not in existing_profile_cols:
+                conn.execute(f"ALTER TABLE user_profile ADD COLUMN {col} {ddl}")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_memory (
@@ -176,7 +187,8 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             """
             SELECT message_count, avg_offtopic, avg_provocation,
                    avg_spam, avg_rudeness, avg_verbosity,
-                   interests, notes, first_name, last_name, username, facts
+                   interests, notes, first_name, last_name, username, facts,
+                   avg_friendliness, mood, mood_turns
             FROM user_profile WHERE user_id=?
                  """,
             (user_id,),
@@ -203,6 +215,9 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
                 "avg_spam": 0.0,
                 "avg_rudeness": 0.0,
                 "avg_verbosity": 0.5,
+                "avg_friendliness": 0.0,
+                "mood": "",
+                "mood_turns": 0,
                 "interests": [],
                 "notes": "",
                 "facts": {},
@@ -242,9 +257,33 @@ def get_user_profile(user_id: int, identity: Dict[str, str] = None) -> Dict[str,
             "last_name": row[9] or "",
             "username": row[10] or "",
             "facts": _parse_facts(row[11]),
+            "avg_friendliness": row[12] or 0.0,
+            "mood": row[13] or "",
+            "mood_turns": row[14] or 0,
         }
     finally:
         conn.close()
+
+
+def update_user_mood(user_id: int, mood: str, hold_turns: int):
+    """Short-term mood: a non-empty `mood` (the tone of the user's latest message) is held for the
+    next `hold_turns` replies; an empty one counts the held mood down and clears it at zero."""
+    with get_connection() as conn:
+        if mood:
+            conn.execute(
+                "UPDATE user_profile SET mood = ?, mood_turns = ? WHERE user_id = ?", (mood, hold_turns, user_id)
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE user_profile
+                SET mood_turns = MAX(mood_turns - 1, 0),
+                    mood = CASE WHEN mood_turns <= 1 THEN '' ELSE mood END
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+        conn.commit()
 
 
 def increment_message_count(user_id: int):
@@ -293,6 +332,7 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
     avg_spam = ema(profile["avg_spam"], profile_update.get("spam", 0))
     avg_rudeness = ema(profile["avg_rudeness"], profile_update.get("rudeness", 0))
     avg_verbosity = ema(profile["avg_verbosity"], profile_update.get("verbosity", 0.5))
+    avg_friendliness = ema(profile["avg_friendliness"], profile_update.get("friendliness", 0))
 
     # Merge interests newest-first with a stable dedup, capped at 20. Putting
     # incoming before existing means that when the cap is hit the OLDEST entries
@@ -317,7 +357,7 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
             """
             UPDATE user_profile
             SET avg_offtopic=?, avg_provocation=?, avg_spam=?,
-                avg_rudeness=?, avg_verbosity=?, interests=?, last_updated=?
+                avg_rudeness=?, avg_verbosity=?, avg_friendliness=?, interests=?, last_updated=?
             WHERE user_id=?
         """,
             (
@@ -326,6 +366,7 @@ def update_user_profile(user_id: int, profile_update: Dict[str, Any]):
                 avg_spam,
                 avg_rudeness,
                 avg_verbosity,
+                avg_friendliness,
                 interests_str,
                 int(time.time()),
                 user_id,

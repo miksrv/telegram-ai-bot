@@ -444,3 +444,24 @@ def test_facts_column_migration_is_idempotent(tmp_path, monkeypatch):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
     conn.close()
     assert "facts" in cols
+
+
+def test_update_user_mood_holds_then_counts_down():
+    from database.db import update_user_mood
+
+    _fresh_profile()
+    update_user_mood(_TEST_USER, "rude", 2)
+    p = get_user_profile(_TEST_USER)
+    assert (p["mood"], p["mood_turns"]) == ("rude", 2)
+    update_user_mood(_TEST_USER, "", 2)
+    p = get_user_profile(_TEST_USER)
+    assert (p["mood"], p["mood_turns"]) == ("rude", 1)
+    update_user_mood(_TEST_USER, "", 2)
+    p = get_user_profile(_TEST_USER)
+    assert (p["mood"], p["mood_turns"]) == ("", 0)
+
+
+def test_friendliness_is_averaged_like_other_metrics():
+    before = _fresh_profile()["avg_friendliness"]
+    update_user_profile(_TEST_USER, {"friendliness": 1.0})
+    assert get_user_profile(_TEST_USER)["avg_friendliness"] > before
