@@ -144,6 +144,7 @@ def test_last_bot_message_at_seeded_from_restored_history(monkeypatch):
     """After a restart the guard must still know the bot spoke last (persisted history)."""
     import core.memory as memory_mod
 
+    monkeypatch.setattr(memory_mod, "_persona_changed", lambda: False)
     monkeypatch.setattr(
         memory_mod,
         "load_memory",
@@ -157,3 +158,40 @@ def test_last_bot_message_at_seeded_from_restored_history(monkeypatch):
     assert mm.last_bot_message_at(1) == 1000.0
     assert mm.last_bot_message_at(2) == 0
     assert mm.last_bot_message_at(3) == 0
+
+
+def test_persona_switch_drops_history_but_keeps_bot_time(monkeypatch):
+    import core.memory as memory_mod
+
+    monkeypatch.setattr(memory_mod, "_persona_changed", lambda: True)
+    monkeypatch.setattr(
+        memory_mod,
+        "load_memory",
+        lambda: {1: {"last_access": 1000.0, "history": [(5, "user", "q"), (5, "assistant", "a")]}},
+    )
+    mm = MemoryManager()
+    assert mm.get_chat_history(1) == []
+    assert mm.last_bot_message_at(1) == 1000.0
+
+
+def test_persona_marker_missing_counts_as_same_persona(tmp_path):
+    import core.memory as memory_mod
+
+    marker = str(tmp_path / "sub" / "active_persona")
+    assert memory_mod._persona_changed(marker) is False
+    memory_mod._record_persona(marker)
+    assert memory_mod._persona_changed(marker) is False
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("someone-else")
+    assert memory_mod._persona_changed(marker) is True
+
+
+def test_flush_records_the_persona_with_the_history(monkeypatch):
+    import core.memory as memory_mod
+
+    calls = []
+    monkeypatch.setattr(memory_mod, "load_memory", dict)
+    monkeypatch.setattr(memory_mod, "flush_memory", lambda storage: calls.append("history"))
+    monkeypatch.setattr(memory_mod, "_record_persona", lambda: calls.append("marker"))
+    MemoryManager().flush()
+    assert calls == ["history", "marker"]

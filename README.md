@@ -76,6 +76,7 @@ telegram-ai-bot/
 │   ├── delivery.py                  # Shared status-message lifecycle for MQTT result delivery
 │   ├── weather_handler.py           # /weather command
 │   ├── stats_handler.py             # /stats command (DB statistics)
+│   ├── me_handler.py                # /me command (how the bot sees you)
 │   └── help_handler.py              # /help, /start (description + command list)
 ├── services/
 │   ├── telegram_service.py          # Bot initialization, handler registration, dynamic command menu
@@ -154,7 +155,7 @@ All settings are loaded from `.env` via `config/settings.py`. Copy `.env.example
 |----------|---------|-------------|
 | `PERSONA` | `peasant` | Which `personas/<name>.md` file defines the bot's name, character and tone: `peasant` (Микула) or `tars`. An unknown name fails at startup |
 
-A persona file is plain text: `key: value` header lines (`name`, `self_names`, `triggers`) up to a `---` line, then prompt text in `## identity`, `## style`, `## humor` and `## proactive_character` sections. Structural rules (JSON contract, plain text, user card, capabilities) stay in `core/prompts.py` for every persona. The bot always answers to "тарс"/"tars" and, in addition, to the active persona's `triggers` (for `peasant`: "Микула"). To add a persona, copy `personas/tars.md`, edit it and set `PERSONA` to its file name.
+A persona file is plain text: `key: value` header lines (`name`, `self_names`, `triggers`) up to a `---` line, then prompt text in `## identity`, `## style`, `## humor` and `## proactive_character` sections, plus optional `## reminder` (a short in-character nudge sent after each user message) and `## attitudes` (how the persona treats rude, provocative, off-topic, spamming, friendly, new, regular, expert and beginner users; picked per user from the tone of their recent messages and their long-term profile). Structural rules (JSON contract, plain text, user card, capabilities) stay in `core/prompts.py` for every persona. The bot always answers to "тарс"/"tars" and, in addition, to the active persona's `triggers` (for `peasant`: "Микула"). To add a persona, copy `personas/tars.md`, edit it and set `PERSONA` to its file name. After a persona switch the bot drops the stored chat history from the previous persona at startup, so the new voice is not pulled back by old replies.
 
 ### LLM Engine
 
@@ -250,6 +251,7 @@ Reactions are decided by plain keyword matching, never by the LLM, only in allow
 | `/skymap` | Allowed chats | Full all-sky star chart (no coordinates needed) |
 | `/galaxy` | Allowed chats | All-sky chart in galactic coordinates |
 | `/weather <city>` | Allowed chats | Get current weather for a city |
+| `/me` | Allowed chats / admin DM | The bot tells you, in its persona's voice, how it sees you (interests, what it remembers, its attitude) |
 | `/stats` | Allowed chats / admin DM | Aggregate database statistics (users, interactions, stored messages) in Russian |
 | `/help`, `/start` | Allowed chats / DM | Short bot description and command list in Russian |
 

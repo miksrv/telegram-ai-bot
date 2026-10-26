@@ -13,12 +13,17 @@ in the body are comments and are ignored.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 from config.settings import PERSONA, PERSONAS_DIR
 
 REQUIRED_SECTIONS = ("identity", "style", "humor", "proactive_character")
+# Optional: a short in-character nudge sent right after the user's message (see core/brain.py).
+OPTIONAL_SECTIONS = ("reminder",)
+# Optional "## attitudes" section: "- key: how to treat such a person" lines, keyed by
+# PersonalityEngine.attitudes() (rude, provocative, offtopic, spammer, friend, newcomer, regular, ...).
+ATTITUDES_SECTION = "attitudes"
 
 # The original bot name always stays valid as a way to address the bot,
 # whatever persona is active (and is what the stored chat history calls it).
@@ -37,6 +42,8 @@ class Persona:
     style: str
     humor: str
     proactive_character: str
+    reminder: str = ""
+    attitudes: Dict[str, str] = field(default_factory=dict)
 
     def all_self_names(self) -> List[str]:
         """Persona's own names first, then the base TARS names, without duplicates."""
@@ -49,6 +56,17 @@ class Persona:
 
 def _split_csv(raw: str) -> Tuple[str, ...]:
     return tuple(x.strip() for x in raw.split(",") if x.strip())
+
+
+def _parse_attitudes(lines: List[str]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if line.startswith("- ") and ":" in line:
+            k, _, v = line[2:].partition(":")
+            if k.strip() and v.strip():
+                result[k.strip().lower()] = v.strip()
+    return result
 
 
 def parse_persona(key: str, text: str) -> Persona:
@@ -78,12 +96,13 @@ def parse_persona(key: str, text: str) -> Persona:
     if missing or not header.get("name"):
         raise ValueError(f"persona '{key}': missing header 'name' or sections {missing}")
 
-    text_of = {s: "\n".join(sections[s]).strip() for s in REQUIRED_SECTIONS}
+    text_of = {s: "\n".join(sections.get(s, [])).strip() for s in (*REQUIRED_SECTIONS, *OPTIONAL_SECTIONS)}
     return Persona(
         key=key,
         name=header["name"],
         self_names=_split_csv(header.get("self_names", "")) or (header["name"],),
         triggers=tuple(t.lower() for t in _split_csv(header.get("triggers", ""))),
+        attitudes=_parse_attitudes(sections.get(ATTITUDES_SECTION, [])),
         **text_of,
     )
 
