@@ -49,6 +49,7 @@ services/
   startup_notifier.py            # send_startup_notification(): DMs every ADMIN_IDS user once at boot with allowed chats, active LLM engine/model, MQTT status, proactive status
 utils/
   triggers.py                    # Trigger word detection (тарс/tars + the active persona's triggers) + is_reply_to_bot
+  blocklist.py                   # is_blocked_user(message): the blacklist check used by the gate in telegram_service
   identity.py                    # Extracts Telegram user identity dict from message
   photo.py                       # Extracts photo URL from Telegram message
   typing_action.py               # typing_action() context manager: keeps the "typing..." indicator alive (refreshed every few seconds) for the duration of a slow call
@@ -78,6 +79,9 @@ Only the API key for the active engine is validated at startup (`config/settings
 
 ### Startup notification
 `main.py` calls `start_mqtt()` and `init_bot()`, then `services/startup_notifier.send_startup_notification(bot, mqtt_connected)` before any other background loop starts. It DMs every user in `ADMIN_IDS` (not just chats — this requires each admin to have started a private chat with the bot at least once, or Telegram rejects that individual send) with the allowed chat IDs, the active `LLM_ENGINE` + its text model, whether the initial MQTT connect succeeded, and whether proactive engagement is enabled. Each admin send is wrapped independently so one admin who never DM'd the bot doesn't block the notification to the others.
+
+### Blacklist
+`BLOCKED_USER_IDS` lists users the bot ignores entirely. One gate does it: `services/telegram_service.py` registers `_blocked_user_handler` **first**, with `func=utils.blocklist.is_blocked_user`, and telebot runs only the first matching handler, so a blocked user's text/photo message (commands, trigger words, replies to the bot) never reaches any other handler: no reply, no reaction, nothing saved to `messages` or chat memory, no profile update. Ignored messages are logged at debug level only. As a safeguard for rows saved before a user was blocked, `get_reply_candidate`, `get_recent_messages` and `get_recent_user_messages` in `database/db.py` also exclude blocked `user_id`s, and `message_handler._quoted_text` drops the text of a quoted blocked user's message. A malformed `BLOCKED_USER_IDS` raises `RuntimeError` at import. New handlers need no extra check as long as the gate stays registered first.
 
 ### Conversational message
 1. `message_handler.handle_message` → observe block (save to `messages` if enrolled) → trigger/reply check → cooldown check. When the message is a reply to the bot, the replied-to text is captured and passed to `brain.think` as `reply_to_text`
@@ -178,6 +182,7 @@ PROACTIVE_CHAT_IDS= # Comma-separated subset of ALLOWED_CHAT_IDS for proactive o
 
 Other optional variables:
 ```env
+BLOCKED_USER_IDS=           # Comma-separated user IDs the bot completely ignores (default: empty); see "Blacklist" under Key Data Flows
 LOG_LEVEL=                  # DEBUG/INFO/WARNING/ERROR/CRITICAL (default: INFO)
 STARMAP_MAX_WAIT=           # Seconds to wait for a finished star chart (default: 120)
 STARMAP_IMAGE_DIR=          # Shared dir for chart files; image_path is validated against it (default: unset → base64 only)

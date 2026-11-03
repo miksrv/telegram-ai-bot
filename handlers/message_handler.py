@@ -10,6 +10,7 @@ from telebot import TeleBot, types
 
 from config.settings import (
     ADMIN_IDS,
+    BLOCKED_USER_IDS,
     PROACTIVE_CHAT_IDS,
     PROACTIVE_MIN_CHAR_COUNT,
     PROACTIVE_MIN_WORD_COUNT,
@@ -26,6 +27,14 @@ from utils.identity import extract_telegram_identity
 from utils.photo import extract_photo_url
 from utils.triggers import is_calling_tars, is_reply_to_bot
 from utils.typing_action import typing_action
+
+
+def _quoted_text(quoted) -> str | None:
+    """Text of a quoted message, or None when its author is blacklisted (their words must not reach the LLM)."""
+    author = getattr(quoted, "from_user", None)
+    if author is not None and author.id in BLOCKED_USER_IDS:
+        return None
+    return quoted.text or quoted.caption
 
 
 def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
@@ -144,7 +153,7 @@ def handle_message(bot: TeleBot, message: types.Message, allowed_chat_ids: set):
     reply_to_text = None
     reply_to_is_bot = False
     if message.reply_to_message is not None:
-        reply_to_text = message.reply_to_message.text or message.reply_to_message.caption
+        reply_to_text = _quoted_text(message.reply_to_message)
         reply_to_is_bot = is_reply
 
     # --- Generate reply ---

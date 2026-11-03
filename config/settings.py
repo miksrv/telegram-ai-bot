@@ -20,11 +20,14 @@ def require_env(name: str) -> str:
     return value
 
 
-def parse_chat_ids(raw: str) -> Set[int]:
+def parse_chat_ids(raw: str, name: str = "ALLOWED_CHAT_IDS", strict: bool = False) -> Set[int]:
+    """Parses a comma-separated ID list. Malformed input is logged and yields an empty set, or raises if strict."""
     try:
         return {int(x.strip()) for x in raw.split(",") if x.strip()}
     except ValueError:
-        logging.error("Invalid ALLOWED_CHAT_IDS format")
+        if strict:
+            raise RuntimeError(f"ENV variable {name} must be comma-separated numeric IDs, got {raw!r}") from None
+        logging.error("Invalid %s format", name)
         return set()
 
 
@@ -35,7 +38,9 @@ def parse_chat_ids(raw: str) -> Set[int]:
 BOT_TOKEN = require_env("BOT_TOKEN")
 WEATHER_API_KEY = require_env("WEATHER_API_KEY")
 ALLOWED_CHAT_IDS = parse_chat_ids(require_env("ALLOWED_CHAT_IDS"))
-ADMIN_IDS = parse_chat_ids(require_env("ADMIN_IDS"))
+ADMIN_IDS = parse_chat_ids(require_env("ADMIN_IDS"), "ADMIN_IDS")
+# Users the bot completely ignores (optional, comma-separated numeric Telegram user IDs).
+BLOCKED_USER_IDS = parse_chat_ids(os.getenv("BLOCKED_USER_IDS", ""), "BLOCKED_USER_IDS", strict=True)
 
 # --------------------------------------------------
 # LLM Engine
@@ -211,7 +216,7 @@ ALLOWED_COMMANDS = {"status": True}
 # --------------------------------------------------
 
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "true").lower() == "true"
-_proactive_parsed = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", ""))
+_proactive_parsed = parse_chat_ids(os.getenv("PROACTIVE_CHAT_IDS", ""), "PROACTIVE_CHAT_IDS")
 PROACTIVE_CHAT_IDS = _proactive_parsed & ALLOWED_CHAT_IDS
 _dropped = _proactive_parsed - ALLOWED_CHAT_IDS
 if _dropped:
