@@ -21,6 +21,7 @@ from handlers import (
     weather_handler,
 )
 from services.mqtt_service import register_status_listener
+from utils.blocklist import is_blocked_user
 
 
 def init_bot() -> TeleBot:
@@ -29,6 +30,12 @@ def init_bot() -> TeleBot:
     """
     bot = TeleBot(BOT_TOKEN, parse_mode=None)
     bot.bot_id = bot.get_me().id  # Cache bot ID once at startup
+
+    # --- Blacklist gate: must stay first. telebot runs only the first matching handler, so a blocked
+    # user's message (command, trigger, photo, anything) is swallowed here and never reaches the others.
+    @bot.message_handler(func=is_blocked_user, content_types=["text", "photo"])
+    def _blocked_user_handler(_message: Message):
+        pass
 
     # --- Status command handler ---
     @bot.message_handler(commands=["status"])

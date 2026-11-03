@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-11-03
+
+### Added
+
+- `BLOCKED_USER_IDS` (optional, comma-separated Telegram user IDs): a blacklist.
+  A single gate registered first in `services/telegram_service.py` makes the bot
+  ignore blocked users completely: no replies, commands, reactions, storage or
+  profile updates. Existing rows from blocked users are also excluded from
+  proactive direct-reply candidates, recent-context reads and the per-user
+  earlier-messages block, and the text of a blocked user's message quoted in a
+  reply is not passed to the model. A malformed `BLOCKED_USER_IDS` stops the bot
+  at startup instead of silently becoming empty.
+
 ## [1.2.0] - 2026-10-25
 
 ### Added

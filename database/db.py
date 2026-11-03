@@ -11,7 +11,7 @@ import sqlite3
 import time
 from typing import Any, Dict, Optional
 
-from config.settings import DB_PATH, PROFILE_EMA_ALPHA
+from config.settings import BLOCKED_USER_IDS, DB_PATH, PROFILE_EMA_ALPHA
 
 # ==========================================================
 # DATABASE CONNECTION
@@ -548,6 +548,14 @@ def save_message(
         conn.commit()
 
 
+def _blocked_user_clause() -> tuple:
+    """Returns (sql_fragment, params) excluding BLOCKED_USER_IDS rows from a `messages` query."""
+    blocked = sorted(BLOCKED_USER_IDS)
+    if not blocked:
+        return "", ()
+    return f" AND user_id NOT IN ({','.join('?' * len(blocked))})", tuple(blocked)
+
+
 def get_recent_messages(chat_id: int, limit: int) -> list:
     """
     Returns up to `limit` most recent messages for a chat, ordered oldest-first.
@@ -555,15 +563,16 @@ def get_recent_messages(chat_id: int, limit: int) -> list:
     """
     conn = get_connection()
     try:
+        clause, params = _blocked_user_clause()
         rows = conn.execute(
-            """
+            f"""
             SELECT first_name, username, text
             FROM messages
-            WHERE chat_id = ?
+            WHERE chat_id = ?{clause}
             ORDER BY timestamp DESC
             LIMIT ?
         """,
-            (chat_id, limit),
+            (chat_id, *params, limit),
         ).fetchall()
         return [{"first_name": r[0], "username": r[1], "text": r[2]} for r in reversed(rows)]
     finally:
@@ -582,15 +591,16 @@ def get_recent_user_messages(chat_id: int, user_id: int, limit: int) -> list:
         return []
     conn = get_connection()
     try:
+        clause, params = _blocked_user_clause()
         rows = conn.execute(
-            """
+            f"""
             SELECT text
             FROM messages
-            WHERE chat_id = ? AND user_id = ?
+            WHERE chat_id = ? AND user_id = ?{clause}
             ORDER BY timestamp DESC
             LIMIT ?
         """,
-            (chat_id, user_id, limit),
+            (chat_id, user_id, *params, limit),
         ).fetchall()
         return [r[0] for r in reversed(rows)]
     finally:
@@ -626,15 +636,16 @@ def get_reply_candidate(chat_id: int, min_word_count: int, pool_size: int = 30) 
     """
     conn = get_connection()
     try:
+        blocked_clause, blocked = _blocked_user_clause()
         rows = conn.execute(
-            """
+            f"""
             SELECT id, telegram_message_id, first_name, username, text
             FROM messages
-            WHERE chat_id = ? AND word_count >= ? AND replied_at = 0
+            WHERE chat_id = ? AND word_count >= ? AND replied_at = 0{blocked_clause}
             ORDER BY timestamp DESC
             LIMIT ?
             """,
-            (chat_id, min_word_count, pool_size),
+            (chat_id, min_word_count, *blocked, pool_size),
         ).fetchall()
         if not rows:
             return None
